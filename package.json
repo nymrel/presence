@@ -1,0 +1,20 @@
+{
+  "name": "presence-rail",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Presence — a human-attention handoff rail for agents. Transports context and attention, never a solved answer.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "presence": "./src/cli.js"
+  },
+  "scripts": {
+    "serve": "node src/cli.js serve",
+    "test": "node --test tests/guarantees.test.js",
+    "demo:dor": "node demo/dor-lookup.js"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

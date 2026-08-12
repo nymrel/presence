@@ -1,0 +1,9 @@
+# Runtime state. None of this is ever committed.
+#   var/agent-profile   — a real Chrome profile: cookies, cache, session state
+#   var/*-ledger.jsonl  — the audit ledger; it is the operator's record, not the repo's
+#   var/tickets         — live resume tickets
+var/
+node_modules/
+*.log
+.env
+.env.*
