@@ -51,6 +51,7 @@ export const STATES = Object.freeze([
   'abandoned',   // human declined
   'timeout',     // nobody came
   'refused',     // the rail itself refused the gate (policy)
+  'retired',     // the world closed the gate — no human was ever needed after all
 ]);
 
 export class GateRegistry {
@@ -146,6 +147,37 @@ export class GateRegistry {
     });
 
     this.writeTicket(id, { ...this.readTicket(id), state: g.state, outcome });
+    return g;
+  }
+
+  /**
+   * Retire a gate the world closed while it was waiting.
+   *
+   * Deliberately NOT release(). A release is a human event and says a human
+   * attended. If an agent could write that, every receipt in the ledger would
+   * be worth less — the whole enterprise value of this rail is that
+   * `human.attached` means a human actually attached. So retirement is its own
+   * event, actor 'agent', and it is visibly absent a human leg.
+   *
+   * The case this exists for: an operator queue item stops needing him (the
+   * world satisfied it, or a probe showed it never required him). Without this
+   * the gate sits on his pager forever and the rail accumulates exactly the
+   * phantom asks the register was built to kill.
+   */
+  retire(id, note) {
+    const g = this.live.get(id);
+    if (!g) return null;
+    g.state = 'retired';
+    g.releasedAt = Date.now();
+    g.frame = null;
+
+    this.ledger.append({
+      id, event: 'gate.retired', actor: 'agent', mode: g.mode,
+      outcome: 'retired', note: note || 'no longer requires a human',
+    });
+
+    this.writeTicket(id, { ...this.readTicket(id), state: 'retired', outcome: 'retired' });
+    this.live.delete(id);
     return g;
   }
 

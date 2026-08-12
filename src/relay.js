@@ -113,6 +113,16 @@ export function createRelay({ ledgerPath, ticketDir, onInput }) {
           });
         }
 
+        // Retire a gate whose need evaporated. Agent-authored, and NOT a
+        // release: no human.attached is ever written by an agent.
+        const rm = path.match(/^\/agent\/gate\/([0-9a-f-]{36})\/retire$/i);
+        if (rm && req.method === 'POST') {
+          const b = await readJson(req);
+          const g = gates.retire(rm[1], typeof b.note === 'string' ? b.note.slice(0, 200) : null);
+          if (!g) return json(res, 404, { error: 'unknown or not-live gate' });
+          return json(res, 200, { ok: true, id: rm[1], state: 'retired' });
+        }
+
         const m = path.match(/^\/agent\/gate\/([0-9a-f-]{36})(\/frame)?$/i);
         if (m && req.method === 'GET' && !m[2]) {
           const g = gates.get(m[1]);
