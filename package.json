@@ -7,7 +7,7 @@
   "homepage": "https://nymrel.com/presence",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JalenBuildsHub/presence.git"
+    "url": "git+https://github.com/nymrel/presence.git"
   },
   "keywords": [
     "human-in-the-loop",
