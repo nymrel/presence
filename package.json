@@ -3,6 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "description": "Presence — a human-attention handoff rail for agents. Transports context and attention, never a solved answer.",
+  "license": "MIT",
+  "homepage": "https://nymrel.com/presence",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JalenBuildsHub/presence.git"
+  },
+  "keywords": [
+    "human-in-the-loop",
+    "agents",
+    "browser-automation",
+    "audit-trail",
+    "captcha",
+    "approval"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22"

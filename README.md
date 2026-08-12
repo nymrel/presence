@@ -6,6 +6,8 @@ of a human doing the whole task.
 
 Presence transports **context and attention**. It never transports an answer.
 
+MIT licensed, zero dependencies, self-hosted. → [nymrel.com/presence](https://nymrel.com/presence)
+
 ---
 
 ## What it is not, and why that is load-bearing
@@ -126,3 +128,23 @@ better than the hub, and agents do not buy domains. Ship at **`nymrel.com/presen
 — the hub where the agent-economy offers already live.
 
 See `docs/COMPLIANCE.md` for which use cases are clean and which are not.
+
+## What costs money, and what never will
+
+The rail is MIT and stays that way. Run it on your own machine, forever, for
+nothing.
+
+The part we intend to charge for is **notarisation** — because a receipt you
+generate, store, and can silently rebuild proves nothing to anyone but you. A
+receipt is worth money only when an outside party binds it to a specific person
+and timestamps the chain. That needs two things this repo does not have yet:
+passkey-bound attach (item 1 in "Next") and a hosted witness. Neither exists
+today, so neither is for sale today. `unmeasured` — we have not sold this to
+anyone.
+
+If you need that receipt to survive an auditor, say so: **contact@nymrel.com**.
+Telling us what it has to prove is more useful to us right now than money.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
