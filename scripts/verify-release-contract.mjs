@@ -12,8 +12,12 @@ function requireContract(condition, message) {
   if (!condition) failures.push(message);
 }
 
+function normalizeText(text) {
+  return text.replace(/\r\n/g, '\n');
+}
+
 function read(path) {
-  return readFileSync(join(ROOT, path), 'utf8');
+  return normalizeText(readFileSync(join(ROOT, path), 'utf8'));
 }
 
 function walkJavaScript(path) {
@@ -84,7 +88,7 @@ for (const file of sourceFiles) {
 const sourcePrefix = `src${process.platform === 'win32' ? '\\' : '/'}`;
 const combinedSource = sourceFiles
   .filter((file) => relative(ROOT, file).startsWith(sourcePrefix))
-  .map((file) => readFileSync(file, 'utf8'))
+  .map((file) => normalizeText(readFileSync(file, 'utf8')))
   .join('\n');
 const passkeyImplementationTokens = [
   'navigator.credentials.create',
