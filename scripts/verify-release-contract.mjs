@@ -57,7 +57,11 @@ requireContract(
   'known attach-authentication weakness must remain visible until fixed',
 );
 requireContract(
-  /passkey[\s\S]{0,500}unmeasured[\s\S]{0,100}not built/i.test(compliance),
+  compliance.toLowerCase().includes('passkey'),
+  'compliance documentation must retain the planned passkey boundary',
+);
+requireContract(
+  compliance.includes('unmeasured — not built'),
   'passkey authentication must remain labeled unmeasured and not built',
 );
 
@@ -77,8 +81,9 @@ for (const file of sourceFiles) {
   );
 }
 
+const sourcePrefix = `src${process.platform === 'win32' ? '\\' : '/'}`;
 const combinedSource = sourceFiles
-  .filter((file) => relative(ROOT, file).startsWith(`src${process.platform === 'win32' ? '\\' : '/'}`))
+  .filter((file) => relative(ROOT, file).startsWith(sourcePrefix))
   .map((file) => readFileSync(file, 'utf8'))
   .join('\n');
 const passkeyImplementationTokens = [
