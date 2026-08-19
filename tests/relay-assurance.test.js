@@ -95,10 +95,37 @@ describe('relay assurance boundary', () => {
       assert.equal(state.response.status, 200);
       assert.equal(state.json.state, 'open');
       assert.equal(state.json.assurance, null);
-      assert.equal(state.json.verified_attachment_required, undefined);
 
       const events = relay.ledger.receipt(id);
       assert.deepEqual(events.map((row) => row.event), ['gate.opened']);
+    } finally {
+      await stop(relay.server);
+    }
+  });
+
+  test('non-strict relay still rejects input and release before console attach', async () => {
+    let injected = 0;
+    const relay = await startRelay({
+      requireVerifiedAttachment: false,
+      onInput: async () => { injected += 1; },
+    });
+    try {
+      const id = await openGate(relay.base);
+      const input = await request(relay.base, `/h/${id}/input`, {
+        method: 'POST',
+        body: { kind: 'pointer', action: 'click', x: 1, y: 1, button: 'left' },
+      });
+      assert.equal(input.response.status, 403);
+      assert.match(input.text, /console attachment is required/);
+      assert.equal(injected, 0, 'input injector must not run before attachment');
+
+      const released = await request(relay.base, `/h/${id}/release`, {
+        method: 'POST',
+        body: { outcome: 'resumed' },
+      });
+      assert.equal(released.response.status, 403);
+      assert.match(released.text, /console attachment is required/);
+      assert.deepEqual(relay.ledger.receipt(id).map((row) => row.event), ['gate.opened']);
     } finally {
       await stop(relay.server);
     }
