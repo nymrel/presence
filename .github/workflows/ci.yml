@@ -47,5 +47,5 @@ jobs:
 
       - name: Inspect package without publishing
         run: |
-          npm pack --dry-run --json > presence-pack.json
-          node scripts/verify-pack-contract.mjs presence-pack.json
+          npm pack --dry-run --json > /tmp/presence-pack.json
+          node scripts/verify-pack-contract.mjs /tmp/presence-pack.json
