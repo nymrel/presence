@@ -25,9 +25,11 @@
     "presence": "./src/cli.js"
   },
   "scripts": {
+    "check": "node scripts/verify-release-contract.mjs && node --test tests/guarantees.test.js",
+    "demo:dor": "node demo/dor-lookup.js",
     "serve": "node src/cli.js serve",
     "test": "node --test tests/guarantees.test.js",
-    "demo:dor": "node demo/dor-lookup.js"
+    "verify:release": "node scripts/verify-release-contract.mjs"
   },
   "dependencies": {},
   "devDependencies": {}
