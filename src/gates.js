@@ -5,59 +5,56 @@
  *
  * Two stores, deliberately different in durability:
  *
- *   1. LIVE STATE (memory only) — the screenshot frame and the attach channel.
- *      Frames are NEVER written to disk. A frame of a filled-in form can contain
- *      a home address, a licence number, a card. We show it to the operator on
- *      his own LAN and then we forget it. Only the SHA-256 survives.
+ *   1. LIVE STATE (memory only) — the screenshot frame, attach channel, and
+ *      one-time attachment challenge. Frames and raw authentication material
+ *      are NEVER written to disk.
  *
  *   2. RESUME TICKET (disk) — the small, boring, non-sensitive record the agent
  *      needs to wake up correctly: gate id, what it was doing, what it does next.
- *      This is what makes the agent sleepable instead of blocked.
  */
 
+import { randomBytes } from 'node:crypto';
 import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import {
+  AttachmentAssuranceError,
+  isVerifiedAttachment,
+  unverifiedLanAttachment,
+  verifiedAttachmentDecision,
+} from './attachment-assurance.js';
 
 export const GATE_KINDS = Object.freeze([
-  'anti_bot',   // reCAPTCHA / Turnstile / hCaptcha / bot interstitial
-  'consent',    // accept terms, cookie wall, permission grant
-  'otp',        // SMS / TOTP / email code the agent must never see
-  'payment',    // confirm a charge
-  'signature',  // e-sign
-  'identity',   // upload ID, liveness check
+  'anti_bot',
+  'consent',
+  'otp',
+  'payment',
+  'signature',
+  'identity',
   'other',
 ]);
 
-/**
- * Delivery mode.
- *
- *   ATTACH — the human drives the agent's own live browser from their phone.
- *            Input events originate from a real finger and are injected into the
- *            real session. Nothing is solved anywhere else and shipped in.
- *
- *   YIELD  — the rail refuses to touch the session and hands the whole step to
- *            the human in THEIR own clean browser. This is the correct mode for
- *            anti-bot gates: the honest response to "this site does not want an
- *            automated browser" is to give it a browser that isn't one, with a
- *            real person at it — not to make the automated one look human.
- */
 export const MODES = Object.freeze(['attach', 'yield']);
 
 export const STATES = Object.freeze([
-  'open',        // agent paused, waiting for a human
-  'attached',    // a human has opened the console and is present
-  'acting',      // input is being relayed
-  'released',    // human says done — agent may resume
-  'abandoned',   // human declined
-  'timeout',     // nobody came
-  'refused',     // the rail itself refused the gate (policy)
-  'retired',     // the world closed the gate — no human was ever needed after all
+  'open',
+  'attached',
+  'acting',
+  'released',
+  'abandoned',
+  'timeout',
+  'refused',
+  'retired',
 ]);
 
 export class GateRegistry {
-  constructor({ ledger, ticketDir }) {
+  constructor({
+    ledger,
+    ticketDir,
+    requireVerifiedAttachment = process.env.PRESENCE_REQUIRE_VERIFIED_ATTACH === '1',
+  }) {
     this.ledger = ledger;
     this.ticketDir = ticketDir;
+    this.requireVerifiedAttachment = Boolean(requireVerifiedAttachment);
     mkdirSync(ticketDir, { recursive: true });
     /** @type {Map<string, object>} in-memory only */
     this.live = new Map();
@@ -71,23 +68,19 @@ export class GateRegistry {
       host,
       task,
       instruction,
-      // Where the human should act when mode === 'yield':
-      //   'agent_window' — physically, at the browser window already open on the
-      //                    workstation. Correct when the session cannot be
-      //                    recreated (WA DOR rejects duplicated tabs outright),
-      //                    so sending the human to a fresh browser would throw
-      //                    away the work the agent already did.
-      //   'own_browser'  — in the human's own clean browser, via handoffUrl.
-      //                    Correct when the step is self-contained.
       yieldTarget: yieldTarget === 'own_browser' ? 'own_browser' : 'agent_window',
       state: 'open',
       openedAt: Date.now(),
-      frame: null,            // Buffer, memory only, replaced on every refresh
+      frame: null,
       frameSha,
       handoffUrl: handoffUrl || null,
-      inputKinds: {},         // counts only
+      inputKinds: {},
       operator: null,
       device: null,
+      attachment: null,
+      // Server-generated, memory-only. A trusted verifier adapter must bind its
+      // decision to the digest of this exact value and this exact gate id.
+      attachmentChallenge: randomBytes(32).toString('base64url'),
     };
     this.live.set(id, gate);
 
@@ -102,27 +95,89 @@ export class GateRegistry {
 
   get(id) { return this.live.get(id) || null; }
 
+  /** Trusted-host surface. Never expose this value in a receipt or log. */
+  getAttachmentChallenge(id) {
+    const g = this.live.get(id);
+    if (!g || isVerifiedAttachment(g.attachment)) return null;
+    return g.attachmentChallenge;
+  }
+
   setFrame(id, buf, sha) {
     const g = this.live.get(id);
     if (!g) return;
-    g.frame = buf;       // memory only — never written to disk
+    g.frame = buf;
     g.frameSha = sha;
   }
 
-  attach(id, { operator, device }) {
+  /**
+   * Record console arrival or a trusted verifier decision.
+   *
+   * `verification` is not a browser assertion. It is the bounded result of a
+   * host-trusted adapter that already performed cryptographic verification.
+   */
+  attach(id, { device, verification } = {}) {
     const g = this.live.get(id);
-    if (!g || g.state !== 'open') return g;
+    const mayUpgrade = g?.state === 'attached' && !isVerifiedAttachment(g.attachment) && verification;
+    if (!g || (g.state !== 'open' && !mayUpgrade)) return g;
+
+    const attachment = verification
+      ? verifiedAttachmentDecision(verification, {
+          gateId: id,
+          challenge: g.attachmentChallenge,
+        })
+      : unverifiedLanAttachment({ device });
+
+    if (this.requireVerifiedAttachment && !isVerifiedAttachment(attachment)) {
+      throw new AttachmentAssuranceError(
+        'verified attachment is required before this gate may be used'
+      );
+    }
+
+    const verified = isVerifiedAttachment(attachment);
     g.state = 'attached';
-    g.operator = operator;
-    g.device = device;
+    g.attachment = attachment;
+    g.operator = attachment.operator;
+    g.device = attachment.device;
     g.attachedAt = Date.now();
-    this.ledger.append({ id, event: 'human.attached', actor: 'human', operator, device, mode: g.mode });
+    if (verified) g.attachmentChallenge = null;
+
+    this.ledger.append({
+      id,
+      event: verified ? 'human.attached' : 'console.attached',
+      actor: verified ? 'human' : 'rail',
+      operator: verified ? attachment.operator : undefined,
+      device: attachment.device,
+      mode: g.mode,
+      assurance: attachment.assurance,
+      verifier: verified ? attachment.verifier : undefined,
+      credential_sha256: verified ? attachment.credential_sha256 : undefined,
+      challenge_sha256: verified ? attachment.challenge_sha256 : undefined,
+      user_verified: attachment.user_verified,
+      note: verified
+        ? 'trusted verifier accepted a gate-bound WebAuthn assertion'
+        : 'LAN console arrived; operator identity was not verified',
+    });
+
+    this.writeTicket(id, {
+      ...this.readTicket(id),
+      state: 'attached',
+      assurance: attachment.assurance,
+    });
     return g;
+  }
+
+  assertUsableAttachment(g) {
+    if (this.requireVerifiedAttachment && !isVerifiedAttachment(g?.attachment)) {
+      throw new AttachmentAssuranceError(
+        'verified attachment is required before input or release'
+      );
+    }
   }
 
   countInput(id, kind) {
     const g = this.live.get(id);
     if (!g) return;
+    this.assertUsableAttachment(g);
     g.state = 'acting';
     g.inputKinds[kind] = (g.inputKinds[kind] || 0) + 1;
   }
@@ -130,40 +185,42 @@ export class GateRegistry {
   release(id, outcome = 'resumed') {
     const g = this.live.get(id);
     if (!g) return null;
+    this.assertUsableAttachment(g);
+
+    const verified = isVerifiedAttachment(g.attachment);
+    const attachment = g.attachment || unverifiedLanAttachment({ device: g.device });
     g.state = outcome === 'resumed' ? 'released' : outcome;
     g.releasedAt = Date.now();
-    g.frame = null; // forget the pixels immediately
+    g.frame = null;
 
     this.ledger.append({
       id,
-      event: 'human.released',
-      actor: 'human',
-      operator: g.operator,
+      event: verified ? 'human.released' : 'console.released',
+      actor: verified ? 'human' : 'rail',
+      operator: verified ? g.operator : undefined,
       device: g.device,
       mode: g.mode,
       input_kinds: g.inputKinds,
       outcome,
-      note: `human attention ${Math.round(((g.releasedAt - (g.attachedAt || g.openedAt)) / 1000))}s`,
+      assurance: attachment.assurance,
+      verifier: verified ? attachment.verifier : undefined,
+      credential_sha256: verified ? attachment.credential_sha256 : undefined,
+      challenge_sha256: verified ? attachment.challenge_sha256 : undefined,
+      user_verified: attachment.user_verified,
+      note: verified
+        ? `verified human attention ${Math.round(((g.releasedAt - (g.attachedAt || g.openedAt)) / 1000))}s`
+        : `unverified LAN console attention ${Math.round(((g.releasedAt - (g.attachedAt || g.openedAt)) / 1000))}s`,
     });
 
-    this.writeTicket(id, { ...this.readTicket(id), state: g.state, outcome });
+    this.writeTicket(id, {
+      ...this.readTicket(id),
+      state: g.state,
+      outcome,
+      assurance: attachment.assurance,
+    });
     return g;
   }
 
-  /**
-   * Retire a gate the world closed while it was waiting.
-   *
-   * Deliberately NOT release(). A release is a human event and says a human
-   * attended. If an agent could write that, every receipt in the ledger would
-   * be worth less — the whole enterprise value of this rail is that
-   * `human.attached` means a human actually attached. So retirement is its own
-   * event, actor 'agent', and it is visibly absent a human leg.
-   *
-   * The case this exists for: an operator queue item stops needing him (the
-   * world satisfied it, or a probe showed it never required him). Without this
-   * the gate sits on his pager forever and the rail accumulates exactly the
-   * phantom asks the register was built to kill.
-   */
   retire(id, note) {
     const g = this.live.get(id);
     if (!g) return null;
@@ -180,8 +237,6 @@ export class GateRegistry {
     this.live.delete(id);
     return g;
   }
-
-  // ---- resume tickets (durable, non-sensitive) ----
 
   ticketPath(id) { return join(this.ticketDir, `${id}.json`); }
 
