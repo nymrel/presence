@@ -166,10 +166,20 @@ export class GateRegistry {
     return g;
   }
 
-  assertUsableAttachment(g) {
-    if (this.requireVerifiedAttachment && !isVerifiedAttachment(g?.attachment)) {
+  assertUsableAttachment(g, operation) {
+    if (!g?.attachment) {
       throw new AttachmentAssuranceError(
-        'verified attachment is required before input or release'
+        `console attachment is required before ${operation}`
+      );
+    }
+    if (!['attached', 'acting'].includes(g.state)) {
+      throw new AttachmentAssuranceError(
+        `an active attachment is required before ${operation}`
+      );
+    }
+    if (this.requireVerifiedAttachment && !isVerifiedAttachment(g.attachment)) {
+      throw new AttachmentAssuranceError(
+        `verified attachment is required before ${operation}`
       );
     }
   }
@@ -177,7 +187,12 @@ export class GateRegistry {
   countInput(id, kind) {
     const g = this.live.get(id);
     if (!g) return;
-    this.assertUsableAttachment(g);
+    if (g.mode !== 'attach') {
+      throw new AttachmentAssuranceError(
+        'yield-mode gates cannot accept relayed input'
+      );
+    }
+    this.assertUsableAttachment(g, 'input');
     g.state = 'acting';
     g.inputKinds[kind] = (g.inputKinds[kind] || 0) + 1;
   }
@@ -185,10 +200,10 @@ export class GateRegistry {
   release(id, outcome = 'resumed') {
     const g = this.live.get(id);
     if (!g) return null;
-    this.assertUsableAttachment(g);
+    this.assertUsableAttachment(g, 'release');
 
     const verified = isVerifiedAttachment(g.attachment);
-    const attachment = g.attachment || unverifiedLanAttachment({ device: g.device });
+    const attachment = g.attachment;
     g.state = outcome === 'resumed' ? 'released' : outcome;
     g.releasedAt = Date.now();
     g.frame = null;
