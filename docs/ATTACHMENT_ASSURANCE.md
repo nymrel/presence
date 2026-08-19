@@ -42,6 +42,26 @@ Ledger events:
 
 The core accepts only the adapter's bounded decision. It does not accept a browser's self-assertion that verification succeeded.
 
+## Secure-origin blocker
+
+The current phone console is served from a URL shaped like:
+
+```text
+http://192.168.x.x:<port>/h/<gate-id>
+```
+
+That origin cannot run an ordinary browser WebAuthn ceremony. WebAuthn credentials are scoped to an RP ID and the requesting origin must use HTTPS, except that `http://localhost` is permitted for local development. A private LAN IP opened from a phone is neither HTTPS nor localhost.
+
+A browser passkey adapter therefore requires a separately reviewed origin strategy before implementation. Viable research directions include:
+
+- a Nymrel-controlled DNS name resolving only inside the operator's network, served with a publicly trusted certificate obtained without exposing gate traffic;
+- an operator-managed local CA whose root is deliberately installed on enrolled devices, plus a stable local DNS name;
+- a native companion application using platform passkey APIs and an explicit local challenge transport.
+
+A public tunnel or hosted WebAuthn page would introduce a cloud hop and change the screenshot/context privacy model. It must not be adopted silently.
+
+No origin strategy is selected in this slice. `PRESENCE_REQUIRE_VERIFIED_ATTACH=1` remains deliberately unusable through the stock LAN page until a reviewed adapter and secure-origin design exist.
+
 ## What the ledger may retain
 
 Only:
@@ -100,7 +120,7 @@ PRESENCE_REQUIRE_VERIFIED_ATTACH=1
 
 Then an unverified console cannot attach, relay input, or release the gate. The gate remains open and no human event is written.
 
-Strict mode is the required posture for any future enterprise or notarised receipt claim. It is not enabled by default because the current self-hosted LAN workflow has no verifier adapter yet.
+Strict mode is the required posture for any future enterprise or notarised receipt claim. It is not enabled by default because the current self-hosted LAN workflow has no verifier adapter or valid WebAuthn origin yet.
 
 ## References
 
