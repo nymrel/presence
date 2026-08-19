@@ -2,9 +2,9 @@
  * The human-facing surface. Mobile-first, because the whole product is
  * "the operator's phone buzzes and five seconds later the agent is unblocked".
  *
- * Design constraint that drove every choice here: the operator must not have to
- * reconstruct context. The page opens already showing what the agent saw, what
- * the agent was doing, and exactly one thing to do next.
+ * The page must never display a successful handoff unless the relay accepted
+ * both attachment and release. A fail-closed server with a falsely optimistic
+ * UI is still a false-confidence bug.
  */
 
 const BASE_CSS = `
@@ -22,6 +22,7 @@ const BASE_CSS = `
   .frame{width:100%;border-radius:10px;border:1px solid #262d3a;display:block;background:#0e1116}
   .btn{display:block;width:100%;border:0;border-radius:13px;padding:19px 16px;font-size:17px;font-weight:650;
        text-align:center;text-decoration:none;cursor:pointer;margin-top:11px;font-family:inherit}
+  .btn:disabled,.locked{opacity:.45;cursor:not-allowed;pointer-events:none}
   .primary{background:#3d7dff;color:#fff}
   .go{background:#1fbf75;color:#04160d}
   .ghost{background:#1a1f29;color:#9aa5b5;border:1px solid #272f3c}
@@ -29,7 +30,9 @@ const BASE_CSS = `
         padding:5px 9px;border-radius:99px;background:#1d2836;color:#7fb0ff;border:1px solid #26364b}
   .pill.yield{background:#2b2418;color:#e0b070;border-color:#453721}
   .note{font-size:13px;color:#798394;margin-top:12px;line-height:1.5}
-  .status{font-size:14px;color:#8b95a6;margin-top:14px;text-align:center}
+  .status{font-size:14px;color:#8b95a6;margin-top:14px;text-align:center;min-height:22px}
+  .status.warn{color:#e0b070}
+  .status.ok{color:#75dba7}
   .done{text-align:center;padding:52px 16px}
   .done h2{font-size:24px;margin-bottom:8px}
   .kbd{width:100%;background:#0e1218;border:1px solid #2a3341;border-radius:11px;color:#e8ecf1;
@@ -69,13 +72,13 @@ export function gatePage(gate) {
   ${isYield && gate.yieldTarget === 'agent_window' ? `
     <div class="card" style="border-color:#453721;background:#1c1810">
       <div class="instruction" style="font-size:15.5px">The browser window is already open on your workstation, on this exact step.</div>
-      <div class="note" style="margin-top:8px">Do it there. This site won't let the session be reopened somewhere else, so starting over in a new browser would throw away everything the agent already filled in.</div>
+      <div class="note" style="margin-top:8px">Do it there. Starting over elsewhere may throw away the work the agent already completed.</div>
     </div>
-    <div class="note">Presence will not touch this step. It relays no input into a challenge — you tick it yourself, in the real session, and tell it when you're through.</div>
-    <button class="btn go" id="done">Done — I ticked it</button>
+    <div class="note">Presence will not touch this step. It relays no input into a challenge — you act in the real session and tell it when you're through.</div>
+    <button class="btn go" id="done">Done — I completed it</button>
   ` : isYield ? `
-    <a class="btn go" id="open" href="${esc(gate.handoffUrl || '#')}" target="_blank" rel="noopener">Open in my browser</a>
-    <div class="note">This opens in your own browser, in your own session. Presence does not touch it and never sees what you enter — it only waits for you to say you're done.</div>
+    <a class="btn go locked" id="open" href="${esc(gate.handoffUrl || '#')}" target="_blank" rel="noopener" aria-disabled="true">Open in my browser</a>
+    <div class="note">This opens in your own browser, in your own session. Presence never sees what you enter — it only waits for you to say you're done.</div>
     <button class="btn primary" id="done">I've done it</button>
   ` : `
     <div class="note">Tap the picture to click. It's the agent's live session — your taps go straight into it.</div>
@@ -83,49 +86,108 @@ export function gatePage(gate) {
     <button class="btn primary" id="done">Done — agent can continue</button>
   `}
   <button class="btn ghost" id="cancel">Can't do this now</button>
-  <div class="status" id="status"></div>
+  <div class="status" id="status">Connecting to the local rail…</div>
 </div>
 <script>
 const ID=${JSON.stringify(gate.id)}, MODE=${JSON.stringify(gate.mode)};
 const $=(s)=>document.querySelector(s), status=$('#status');
-let closed=false;
+let closed=false, attached=false;
+
+function lockActions(locked){
+  for(const node of document.querySelectorAll('#done,#cancel,#kbd,#open')){
+    if('disabled' in node) node.disabled=locked;
+    node.classList.toggle('locked',locked);
+    node.setAttribute('aria-disabled',locked?'true':'false');
+  }
+}
+lockActions(true);
 
 async function post(path, body){
-  const r = await fetch('/h/'+ID+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})});
-  if(!r.ok) status.textContent = 'Rail refused that: ' + (await r.text());
-  return r;
+  let r;
+  try{
+    r=await fetch('/h/'+ID+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})});
+  }catch{
+    status.className='status warn';
+    status.textContent='Local rail is unreachable. Nothing was released.';
+    return null;
+  }
+  if(!r.ok){
+    status.className='status warn';
+    status.textContent='Rail refused that: '+(await r.text());
+    return null;
+  }
+  try{return await r.json();}catch{return {};}
 }
-fetch('/h/'+ID+'/attach',{method:'POST',headers:{'content-type':'application/json'},
-  body:JSON.stringify({device: /Mobi|Android|iPhone/i.test(navigator.userAgent)?'phone':'workstation'})});
 
-function finish(kind,title,sub){
+const attachPromise=post('/attach',{
+  device:/Mobi|Android|iPhone/i.test(navigator.userAgent)?'phone':'workstation'
+}).then((result)=>{
+  if(!result){lockActions(true);return false;}
+  attached=true;
+  lockActions(false);
+  if(result.assurance==='webauthn-verified'){
+    status.className='status ok';
+    status.textContent='Verified human attachment.';
+  }else{
+    status.className='status warn';
+    status.textContent='LAN console attached · identity not verified.';
+  }
+  return true;
+});
+
+async function requireAttachment(){
+  if(attached)return true;
+  return await attachPromise;
+}
+
+function finish(title,sub){
   closed=true;
-  document.getElementById('root').innerHTML =
+  document.getElementById('root').innerHTML=
     '<div class="done"><h2>'+title+'</h2><div class="task">'+sub+'</div></div>';
 }
-$('#done').onclick = async ()=>{ await post('/release',{outcome:'resumed'}); finish('ok','Handed back','The agent is picking it up from here.'); };
-$('#cancel').onclick = async ()=>{ await post('/release',{outcome:'abandoned'}); finish('no','Left for later','The agent will stop cleanly instead of waiting.'); };
+
+$('#done').onclick=async()=>{
+  if(!(await requireAttachment()))return;
+  const released=await post('/release',{outcome:'resumed'});
+  if(!released)return;
+  finish('Handed back','The rail accepted the release. The agent can re-read the live state.');
+};
+$('#cancel').onclick=async()=>{
+  if(!(await requireAttachment()))return;
+  const released=await post('/release',{outcome:'abandoned'});
+  if(!released)return;
+  finish('Left for later','The rail recorded an abandoned handoff.');
+};
 
 if(MODE==='attach'){
   const img=$('#frame');
-  img.addEventListener('click',(e)=>{
+  if(img)img.addEventListener('click',async(e)=>{
+    if(!(await requireAttachment()))return;
     const r=img.getBoundingClientRect();
     const x=Math.round((e.clientX-r.left)/r.width*img.naturalWidth);
     const y=Math.round((e.clientY-r.top)/r.height*img.naturalHeight);
-    post('/input',{kind:'pointer',action:'click',x,y,button:'left'});
-    if(navigator.vibrate)navigator.vibrate(8);
+    const sent=await post('/input',{kind:'pointer',action:'click',x,y,button:'left'});
+    if(sent&&navigator.vibrate)navigator.vibrate(8);
   });
-  $('#kbd').addEventListener('keydown',(e)=>{
-    if(e.key.length===1||['Backspace','Enter','Tab'].includes(e.key))
-      post('/input',{kind:'key',action:'down',key:e.key,code:e.code});
+  const kbd=$('#kbd');
+  if(kbd)kbd.addEventListener('keydown',async(e)=>{
+    if(e.key.length===1||['Backspace','Enter','Tab'].includes(e.key)){
+      if(!(await requireAttachment()))return;
+      await post('/input',{kind:'key',action:'down',key:e.key,code:e.code});
+    }
   });
-  setInterval(()=>{ if(!closed) $('#frame').src='/h/'+ID+'/frame?t='+Date.now(); },1200);
+  if(img)setInterval(()=>{if(!closed)img.src='/h/'+ID+'/frame?t='+Date.now();},1200);
 }
-setInterval(async ()=>{
+setInterval(async()=>{
   if(closed)return;
-  const s=await (await fetch('/h/'+ID+'/state')).json();
-  if(['released','abandoned','timeout','refused'].includes(s.state) && !closed)
-    finish('ok','Closed','This gate is no longer waiting.');
+  try{
+    const s=await(await fetch('/h/'+ID+'/state')).json();
+    if(['released','abandoned','timeout','refused'].includes(s.state)&&!closed)
+      finish('Closed','This gate is no longer waiting.');
+  }catch{
+    status.className='status warn';
+    status.textContent='Local rail is unreachable. No success is assumed.';
+  }
 },3000);
 </script></body></html>`;
 }
@@ -142,37 +204,37 @@ export function pagerPage() {
   <div class="status" id="s">watching…</div>
 </div>
 <script>
-let seen=new Set(), primed=false;
-if('Notification' in window && Notification.permission==='default'){
+let seen=new Set(),primed=false;
+if('Notification'in window&&Notification.permission==='default'){
   document.body.addEventListener('click',()=>Notification.requestPermission(),{once:true});
 }
 async function tick(){
   try{
-    const gates = await (await fetch('/pager/gates')).json();
+    const gates=await(await fetch('/pager/gates')).json();
     const list=document.getElementById('list');
-    if(!gates.length){ list.innerHTML='<div class="empty">Nothing needs you right now.<br>Leave this open — it\\'ll buzz.</div>'; }
-    else {
-      list.innerHTML = gates.map(g=>
+    if(!gates.length){list.innerHTML='<div class="empty">Nothing needs you right now.<br>Leave this open — it\\'ll buzz.</div>';}
+    else{
+      list.innerHTML=gates.map(g=>
         '<a class="gate card" href="/h/'+g.id+'">'
-        + '<div class="row"><span class="pill '+(g.mode==='yield'?'yield':'')+'">'
-        + (g.mode==='yield'?'Your browser':'Live session')+'</span><span class="host">'+g.host+'</span></div>'
-        + '<div class="instruction">'+g.instruction+'</div>'
-        + '<div class="task" style="margin-top:6px">'+g.task+'</div></a>').join('');
+        +'<div class="row"><span class="pill '+(g.mode==='yield'?'yield':'')+'">'
+        +(g.mode==='yield'?'Your browser':'Live session')+'</span><span class="host">'+g.host+'</span></div>'
+        +'<div class="instruction">'+g.instruction+'</div>'
+        +'<div class="task" style="margin-top:6px">'+g.task+'</div></a>').join('');
     }
     for(const g of gates){
       if(!seen.has(g.id)){
         seen.add(g.id);
         if(primed){
-          if(navigator.vibrate) navigator.vibrate([120,60,120]);
-          if('Notification' in window && Notification.permission==='granted')
-            new Notification('An agent needs you', {body:g.instruction+' — '+g.host, tag:g.id});
+          if(navigator.vibrate)navigator.vibrate([120,60,120]);
+          if('Notification'in window&&Notification.permission==='granted')
+            new Notification('An agent needs you',{body:g.instruction+' — '+g.host,tag:g.id});
         }
       }
     }
     primed=true;
     document.getElementById('s').textContent='watching · '+new Date().toLocaleTimeString();
-  }catch(e){ document.getElementById('s').textContent='rail offline'; }
+  }catch{document.getElementById('s').textContent='rail offline';}
 }
-tick(); setInterval(tick,2000);
+tick();setInterval(tick,2000);
 </script></body></html>`;
 }
