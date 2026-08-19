@@ -12,7 +12,7 @@ import {
 import { GateRegistry } from '../src/gates.js';
 import { PresenceLedger } from '../src/ledger.js';
 
-function fixture({ requireVerifiedAttachment = false } = {}) {
+function fixture({ requireVerifiedAttachment = false, mode = 'attach' } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'presence-auth-'));
   const ledger = new PresenceLedger(join(root, 'ledger.jsonl'));
   const gates = new GateRegistry({
@@ -23,8 +23,8 @@ function fixture({ requireVerifiedAttachment = false } = {}) {
   const id = 'gate-auth-test';
   gates.open({
     id,
-    mode: 'attach',
-    gate_kind: 'consent',
+    mode,
+    gate_kind: mode === 'yield' ? 'anti_bot' : 'consent',
     host: 'console.example.test',
     task: 'Approve a bounded change',
     instruction: 'Review and approve',
@@ -71,6 +71,21 @@ describe('attachment assurance is honest by construction', () => {
     assert.equal(ledger.verify().ok, true);
   });
 
+  test('even non-strict mode requires console attachment before input or release', () => {
+    const { gates, id, ledger } = fixture();
+
+    assert.throws(
+      () => gates.countInput(id, 'pointer'),
+      /console attachment is required before input/,
+    );
+    assert.throws(
+      () => gates.release(id, 'resumed'),
+      /console attachment is required before release/,
+    );
+    assert.equal(gates.get(id).state, 'open');
+    assert.deepEqual(ledger.receipt(id).map((row) => row.event), ['gate.opened']);
+  });
+
   test('strict mode refuses unverified attach, input, and release', () => {
     const { gates, id, ledger } = fixture({ requireVerifiedAttachment: true });
 
@@ -84,6 +99,15 @@ describe('attachment assurance is honest by construction', () => {
 
     const events = ledger.receipt(id);
     assert.deepEqual(events.map((row) => row.event), ['gate.opened']);
+  });
+
+  test('yield-mode gates refuse relayed input even after console attachment', () => {
+    const { gates, id } = fixture({ mode: 'yield' });
+    gates.attach(id, { device: 'phone' });
+    assert.throws(
+      () => gates.countInput(id, 'pointer'),
+      /yield-mode gates cannot accept relayed input/,
+    );
   });
 
   test('a gate-bound verified decision may emit human events', () => {
@@ -108,6 +132,11 @@ describe('attachment assurance is honest by construction', () => {
     assert.equal(attached.user_verified, true);
     assert.equal(released.assurance, 'webauthn-verified');
     assert.equal(ledger.verify().ok, true);
+    assert.throws(
+      () => gates.release(id, 'resumed'),
+      /active attachment is required before release/,
+      'a release event may not be appended twice',
+    );
   });
 
   test('gate, challenge, UV, and exact-field bindings fail closed', () => {
@@ -138,6 +167,40 @@ describe('attachment assurance is honest by construction', () => {
         verification: { ...verifiedDecision(gates, id), raw_assertion: 'forbidden' },
       }),
       /fields are not exact/,
+    );
+  });
+
+  test('the ledger rejects mislabeled assurance lifecycle events', () => {
+    const { ledger } = fixture();
+
+    assert.throws(
+      () => ledger.append({
+        id: 'spoofed-human',
+        event: 'human.attached',
+        actor: 'rail',
+        assurance: 'lan-unverified',
+        user_verified: false,
+      }),
+      /verified-human events require actor "human"/,
+    );
+    assert.throws(
+      () => ledger.append({
+        id: 'spoofed-console',
+        event: 'console.attached',
+        actor: 'rail',
+        assurance: 'lan-unverified',
+        user_verified: false,
+        operator: 'attacker-selected',
+      }),
+      /may not include operator/,
+    );
+    assert.throws(
+      () => ledger.append({
+        id: 'misplaced-assurance',
+        event: 'gate.opened',
+        assurance: 'lan-unverified',
+      }),
+      /assurance fields are only valid on attachment lifecycle events/,
     );
   });
 
