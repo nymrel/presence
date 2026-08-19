@@ -10,10 +10,9 @@
  *   - a challenge response cannot be recorded here, because there is nowhere to put it;
  *   - a typed password or 2FA code cannot leak into the audit trail, because
  *     key events are counted, never captured;
- *   - a screenshot cannot be retained, because frames are hashed and discarded.
- *
- * The ledger proves THAT a specific human acted at a specific moment on a
- * specific gate. It deliberately cannot prove WHAT they typed.
+ *   - a screenshot cannot be retained, because frames are hashed and discarded;
+ *   - a WebAuthn assertion cannot be retained; only bounded assurance metadata
+ *     and SHA-256 digests produced by a trusted verifier may survive.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -27,7 +26,7 @@ const ALLOWED_FIELDS = Object.freeze([
   'at',           // ISO timestamp
   'event',        // lifecycle event name
   'actor',        // 'agent' | 'human' | 'rail'
-  'operator',     // stable operator handle, e.g. 'jalen' — never an email, never a device id
+  'operator',     // verified stable operator handle; never an email or raw user handle
   'device',       // coarse device class only: 'phone' | 'workstation' | 'unknown'
   'mode',         // 'attach' | 'yield'
   'gate_kind',    // 'anti_bot' | 'consent' | 'otp' | 'payment' | 'signature' | 'other'
@@ -38,6 +37,11 @@ const ALLOWED_FIELDS = Object.freeze([
   'input_kinds',  // e.g. { pointer: 2, key: 6, scroll: 1 } — COUNTS ONLY, never contents
   'outcome',      // 'resumed' | 'abandoned' | 'timeout' | 'refused'
   'note',         // rail-authored note; never echoes user input
+  'assurance',    // 'lan-unverified' | 'webauthn-verified'
+  'verifier',     // bounded identifier of the trusted verifier adapter
+  'credential_sha256', // hash of credential ID; raw credential ID is forbidden
+  'challenge_sha256',  // hash of server challenge; raw challenge is forbidden
+  'user_verified',     // true only when the trusted adapter verified UV
   'prev_hash',
   'hash',
 ]);
@@ -45,7 +49,9 @@ const ALLOWED_FIELDS = Object.freeze([
 const REDACTED_KEYS = Object.freeze([
   'value', 'values', 'payload', 'token', 'response', 'g-recaptcha-response',
   'solution', 'answer', 'code', 'otp', 'password', 'secret', 'credential',
-  'cookie', 'session', 'address', 'street', 'url', 'text', 'keys',
+  'credential_id', 'cookie', 'session', 'address', 'street', 'url', 'text', 'keys',
+  'challenge', 'assertion', 'signature', 'authenticator_data', 'client_data_json',
+  'user_handle', 'public_key', 'attestation_object',
 ]);
 
 function canonical(obj) {
