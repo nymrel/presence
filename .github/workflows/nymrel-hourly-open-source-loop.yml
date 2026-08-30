@@ -5,6 +5,12 @@ on:
     - cron: "17 9,21 * * *"
   workflow_dispatch:
 
+permissions: {}
+
+concurrency:
+  group: nymrel-hourly-open-source-loop
+  cancel-in-progress: false
+
 jobs:
   maintain:
     name: Propose guarded maintenance
@@ -13,8 +19,7 @@ jobs:
       canary_mode: false
       guard_ref: 3a3e9ea17ca7655cb635f06f7fb51aa0b00ce1c5
     permissions:
-      actions: read
-      contents: write
-      issues: read
-      pull-requests: write
-      copilot-requests: write
+      actions: read # Inspect the reusable worker run and its artifacts.
+      contents: write # Create the worker branch and commit a bounded proposal.
+      pull-requests: write # Open or update the guarded maintenance pull request.
+      copilot-requests: write # Invoke the repository-scoped Copilot coding worker.

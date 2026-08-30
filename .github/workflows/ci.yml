@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -14,75 +15,86 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  guarantees:
-    name: Guarantees (${{ matrix.os }}, Node ${{ matrix.node }})
+  contract:
+    name: Contract / ${{ matrix.os }} / Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node: [22, 24]
+        node: ["22.12.0", "24.20.0"]
     steps:
-      - name: Check out repository
+      - name: Check out exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Prove zero-install test gate
-        run: npm test
+      - name: Verify source, release, and assurance contracts
+        run: npm run check
 
-      - name: Parse every source and test file
-        shell: bash
-        run: |
-          set -euo pipefail
-          for file in src/*.js tests/*.js; do
-            node --check "$file"
-          done
-
-      - name: Verify package and claim contracts
-        shell: bash
-        run: |
-          node --input-type=module - <<'NODE'
-          import { readFileSync } from 'node:fs';
-
-          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
-          if (pkg.private !== true) throw new Error('package must remain private');
-          if (pkg.license !== 'MIT') throw new Error('package license drifted');
-          if (pkg.engines?.node !== '>=22') throw new Error('Node support contract drifted');
-          if (Object.keys(pkg.dependencies || {}).length !== 0) throw new Error('runtime dependencies added');
-          if (Object.keys(pkg.devDependencies || {}).length !== 0) throw new Error('development dependencies added');
-          if (pkg.scripts?.test !== 'node --test') throw new Error('test discovery no longer covers every test file');
-
-          const readme = readFileSync('README.md', 'utf8');
-          const compliance = readFileSync('docs/COMPLIANCE.md', 'utf8');
-          const assurance = readFileSync('docs/ATTACHMENT_ASSURANCE.md', 'utf8');
-          for (const text of [readme, compliance, assurance]) {
-            if (!text.includes('lan-unverified')) throw new Error('LAN assurance limitation disappeared');
-            if (!text.includes('webauthn-verified')) throw new Error('verified assurance boundary disappeared');
-          }
-          if (!readme.includes('does **not** implement WebAuthn verification from scratch')) {
-            throw new Error('README no longer states verifier non-goal');
-          }
-          NODE
-
-  adversarial-source-contract:
-    name: No answer, stealth, or raw-auth channel
+  strict-assurance:
+    name: Strict assurance refusal
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check out repository
+      - name: Check out exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: 24
+          node-version: "24.20.0"
 
-      - name: Run complete adversarial suite
+      - name: Prove unverified consoles remain fail-closed
         env:
           PRESENCE_REQUIRE_VERIFIED_ATTACH: "1"
         run: npm test
+
+  package-boundary:
+    name: Package boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24.20.0"
+
+      - name: Inspect package without publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > "$RUNNER_TEMP/presence-pack.json"
+          node scripts/verify-pack-contract.mjs "$RUNNER_TEMP/presence-pack.json"
+
+  workflow-security:
+    name: Workflow security
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Audit GitHub Actions definitions
+        uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
+        with:
+          version: 1.29.0
+          persona: pedantic
+          online-audits: false
+          advanced-security: false
+          annotations: true
