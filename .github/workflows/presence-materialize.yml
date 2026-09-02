@@ -38,3 +38,5 @@ jobs:
           git add -A
           git commit -m "feat: add owner-authorized unrestricted approvals"
           git push origin "HEAD:${GITHUB_REF_NAME}"
+
+# Triggered through the contents API after staging verification.
