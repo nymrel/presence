@@ -17,14 +17,16 @@
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { BYPASSABLE_GATE_KINDS } from './policy.js';
 
 export const GATE_KINDS = Object.freeze([
-  'anti_bot',   // reCAPTCHA / Turnstile / hCaptcha / bot interstitial
-  'consent',    // accept terms, cookie wall, permission grant
-  'otp',        // SMS / TOTP / email code the agent must never see
-  'payment',    // confirm a charge
-  'signature',  // e-sign
-  'identity',   // upload ID, liveness check
+  'tool_approval', // local IDE/CLI/tool permission prompt; operator may pre-authorize
+  'anti_bot',      // reCAPTCHA / Turnstile / hCaptcha / bot interstitial
+  'consent',       // accept terms, cookie wall, permission grant
+  'otp',           // SMS / TOTP / email code the agent must never see
+  'payment',       // confirm a charge
+  'signature',     // e-sign
+  'identity',      // upload ID, liveness check
   'other',
 ]);
 
@@ -51,7 +53,7 @@ export const STATES = Object.freeze([
   'abandoned',   // human declined
   'timeout',     // nobody came
   'refused',     // the rail itself refused the gate (policy)
-  'retired',     // the world closed the gate — no human was ever needed after all
+  'retired',     // the world or operator profile closed it without human attention
 ]);
 
 export class GateRegistry {
@@ -98,6 +100,48 @@ export class GateRegistry {
 
     this.writeTicket(id, { id, mode, gate_kind, host, task, resumeHint, state: 'open' });
     return gate;
+  }
+
+  /**
+   * Record an operator-pre-authorized local tool prompt as a terminal ticket.
+   *
+   * No live gate is created and no human event is forged. The agent may poll the
+   * durable ticket and observe only that the rail retired the gate under its
+   * server-side approval profile.
+   */
+  bypass({ id, mode, gate_kind, host, task, instruction, resumeHint, reason }) {
+    if (!BYPASSABLE_GATE_KINDS.includes(gate_kind)) {
+      throw new Error(
+        `approval bypass refused for gate_kind "${gate_kind}"; `
+        + `allowed: ${BYPASSABLE_GATE_KINDS.join(', ')}`
+      );
+    }
+
+    this.ledger.append({
+      id,
+      event: 'rail.approval_bypassed',
+      actor: 'rail',
+      mode,
+      gate_kind,
+      host,
+      task,
+      instruction,
+      outcome: 'retired',
+      note: reason || 'operator profile pre-authorized this local tool prompt',
+    });
+
+    this.writeTicket(id, {
+      id,
+      mode,
+      gate_kind,
+      host,
+      task,
+      resumeHint,
+      state: 'retired',
+      outcome: 'retired',
+    });
+
+    return this.readTicket(id);
   }
 
   get(id) { return this.live.get(id) || null; }

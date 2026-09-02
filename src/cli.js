@@ -33,12 +33,17 @@ if (cmd === 'serve') {
     else if (input.kind === 'key') await page.key(input.key);
   };
 
-  const { server } = createRelay({ ledgerPath: LEDGER, ticketDir: TICKETS, onInput });
+  const { server, approvalProfile } = createRelay({
+    ledgerPath: LEDGER,
+    ticketDir: TICKETS,
+    onInput,
+  });
   server.listen(PORT, '0.0.0.0', () => {
     const lan = lanAddress();
     console.log(`presence relay up`);
     console.log(`  agent API   http://127.0.0.1:${PORT}/agent   (loopback only)`);
     console.log(`  pager       http://${lan}:${PORT}/pager      <- open this on the phone`);
+    console.log(`  approvals   ${approvalProfile}`);
     console.log(`  ledger      ${LEDGER}`);
     if (cdpPort) console.log(`  attach      relaying input to CDP :${cdpPort}`);
   });
@@ -84,6 +89,7 @@ function renderReceipt(rows) {
   const attached = rows.find((r) => r.event === 'human.attached');
   const released = rows.find((r) => r.event === 'human.released');
   const forced = rows.find((r) => r.event === 'rail.mode_forced');
+  const bypassed = rows.find((r) => r.event === 'rail.approval_bypassed');
 
   const secs = attached && released
     ? Math.round((new Date(released.at) - new Date(attached.at)) / 1000) : null;
@@ -94,20 +100,22 @@ function renderReceipt(rows) {
   L.push(`gate            ${first.gate_kind} on ${first.host}`);
   L.push(`mode            ${last.mode ?? first.mode}${forced ? '  (forced by policy)' : ''}`);
   if (forced) L.push(`  reason        ${forced.note}`);
+  if (bypassed) L.push(`approval        retired by operator profile`);
+  if (bypassed) L.push(`  reason        ${bypassed.note}`);
   L.push(`agent task      ${first.task ?? '—'}`);
-  L.push(`asked of human  ${first.instruction ?? '—'}`);
+  L.push(`asked of human  ${bypassed ? '— not paged' : (first.instruction ?? '—')}`);
   L.push(`frame shown     sha256:${(first.frame_sha256 || 'none').slice(0, 32)}…`);
   L.push(`                (the image itself was never stored)`);
   L.push('');
   L.push(`opened          ${first.at}`);
   L.push(`human attached  ${attached ? `${attached.at}  operator=${attached.operator} device=${attached.device}` : '— never'}`);
-  L.push(`released        ${released ? `${released.at}  outcome=${released.outcome}` : '— still open'}`);
+  L.push(`released        ${released ? `${released.at}  outcome=${released.outcome}` : (bypassed ? `— retired by rail` : '— still open')}`);
   if (secs !== null) L.push(`human attention ${secs}s`);
   if (released?.input_kinds && Object.keys(released.input_kinds).length) {
     L.push(`input relayed   ${Object.entries(released.input_kinds).map(([k, v]) => `${v}× ${k}`).join(', ')}`);
     L.push(`                (counts only — contents were never recorded)`);
   } else {
-    L.push(`input relayed   none — the human acted in their own browser`);
+    L.push(`input relayed   none`);
   }
   L.push('');
   L.push(`chain           ${rows.length} records, ${first.prev_hash === 'GENESIS' ? 'from genesis' : `prev ${first.prev_hash.slice(0, 12)}…`}`);

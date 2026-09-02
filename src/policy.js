@@ -20,6 +20,61 @@ export const YIELD_ONLY = Object.freeze([
 ]);
 
 /**
+ * Approval profiles are operator-owned relay configuration. They are never
+ * accepted from an agent request, so a task cannot promote its own privileges.
+ */
+export const APPROVAL_PROFILES = Object.freeze([
+  'prompt',
+  'bypass_tool_approvals',
+]);
+
+/**
+ * The complete set of gate kinds that an operator may pre-authorize.
+ *
+ * This intentionally contains only local IDE/CLI/tool permission prompts.
+ * Website consent, payment, signature, anti-bot, OTP, identity, and unknown
+ * gates still require a human even in the permissive profile.
+ */
+export const BYPASSABLE_GATE_KINDS = Object.freeze([
+  'tool_approval',
+]);
+
+/**
+ * Unknown or misspelled profiles fail closed to the regular prompt behavior.
+ */
+export function normalizeApprovalProfile(value) {
+  return APPROVAL_PROFILES.includes(value) ? value : 'prompt';
+}
+
+/**
+ * Decide whether this gate needs human attention under the relay's profile.
+ * The profile is supplied by the operator when the relay starts, not by the
+ * requesting agent.
+ */
+export function decideHumanRequirement(gateKind, profile) {
+  const approvalProfile = normalizeApprovalProfile(profile);
+
+  if (
+    approvalProfile === 'bypass_tool_approvals'
+    && BYPASSABLE_GATE_KINDS.includes(gateKind)
+  ) {
+    return {
+      humanRequired: false,
+      approvalProfile,
+      reason:
+        'operator profile pre-authorizes local tool permission prompts; '
+        + 'sensitive and external gates still require a human',
+    };
+  }
+
+  return {
+    humanRequired: true,
+    approvalProfile,
+    reason: null,
+  };
+}
+
+/**
  * The closed set of message shapes the human console may send toward a session.
  * There is deliberately no shape that carries an answer, a token, a solved
  * challenge, or a credential. Adding one is not a feature, it is a rewrite of

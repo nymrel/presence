@@ -24,8 +24,9 @@ That is enforced in code, not promised in a README:
 | The ledger has nowhere to put a credential | `src/ledger.js` → closed field allowlist | throws on `token`/`password`/`address`/… |
 | The browser never hides that it is automated | `src/bridge-cdp.js` | greps `src/` for 9 stealth techniques |
 | No solving vendor can be pulled in | `package.json` | asserts zero dependencies |
+| An agent cannot grant itself an approval bypass | `src/policy.js` → server-owned profile | unknown profiles fail closed; bypass set is exact |
 
-`node --test tests/guarantees.test.js` → **13/13 passing** (`probed 2026-08-12`).
+`node --test tests/guarantees.test.js` → **20/20 passing** (`probed 2026-09-02`).
 
 If you are reading this because you want to relax one of them: the product dies
 the moment it becomes a bypass, and so does the customer's defence that a real
@@ -71,6 +72,52 @@ there is no channel a solved challenge could travel through either.
     duplicated tab outright (`probed`), so sending the human elsewhere would
     throw away everything the agent already filled in.
 
+### Approval profiles
+
+Presence separates a **local tool permission prompt** from a step where a person
+must actually act.
+
+The relay defaults to the regular, fail-closed profile:
+
+```bash
+PRESENCE_APPROVAL_PROFILE=prompt node src/cli.js serve
+```
+
+A trusted single-operator environment can pre-authorize local IDE, CLI, or tool
+permission prompts:
+
+```bash
+PRESENCE_APPROVAL_PROFILE=bypass_tool_approvals node src/cli.js serve
+```
+
+That profile retires only gates declared as:
+
+```js
+{ gate_kind: 'tool_approval' }
+```
+
+It does **not** bypass `anti_bot`, `otp`, `identity`, `consent`, `payment`,
+`signature`, or `other`. Those still open a human handoff. Unknown profile
+values normalize to `prompt`, and the approval profile is read when the relay
+starts; it is not accepted from `presence.pause(...)`, so an agent cannot
+promote itself.
+
+A pre-authorized tool prompt returns immediately with:
+
+```json
+{
+  "state": "retired",
+  "human_required": false,
+  "approval_profile": "bypass_tool_approvals",
+  "console_url": null,
+  "pager_url": null
+}
+```
+
+The terminal ticket remains pollable and the ledger records
+`rail.approval_bypassed`. It never writes `human.attached` or
+`human.released`, because no human attended.
+
 ## Run it
 
 ```bash
@@ -105,6 +152,9 @@ seal            f152d827b4b72ae0…
 A provable record that a specific human approved a specific action at a specific
 moment — and, deliberately, no record of what they typed. It can prove presence.
 It cannot leak a password. Both properties come from the same closed field list.
+
+For a pre-authorized local tool prompt, the receipt instead states that the rail
+retired it under the operator profile and that a human never attached.
 
 ## Next, in order
 
