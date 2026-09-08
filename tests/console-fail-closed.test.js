@@ -104,7 +104,7 @@ describe('console UI fails closed with the relay', () => {
       createElement: (tag) => new FakeNode(tag),
       getElementById: (id) => (id === 'list' ? list : status),
     };
-    const script = html.match(/<script[^>]*>([\s\S]*?)<\/script>/)?.[1];
+    const script = html.match(/<script[^>]*>([\s\S]*?)<\/script>/i)?.[1];
     const context = {
       document,
       fetch: async () => ({ json: async () => [hostile] }),
