@@ -14,7 +14,12 @@ import { networkInterfaces } from 'node:os';
 import { AttachmentAssuranceError } from './attachment-assurance.js';
 import { GateRegistry, GATE_KINDS } from './gates.js';
 import { PresenceLedger, newGateId, hashFrame } from './ledger.js';
-import { enforceMode, validateInput } from './policy.js';
+import {
+  decideHumanRequirement,
+  enforceMode,
+  normalizeApprovalProfile,
+  validateInput,
+} from './policy.js';
 import { gatePage, pagerPage } from './console-ui.js';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -57,10 +62,15 @@ async function readJson(req, limit = 8 * 1024 * 1024) {
  * @param {string} opts.ticketDir
  * @param {(gate:object, input:object)=>Promise<void>} [opts.onInput] injector for attach mode
  * @param {boolean} [opts.requireVerifiedAttachment] fail closed without host-verified assurance
+ * @param {'prompt'|'bypass_tool_approvals'} [opts.approvalProfile]
+ *   Operator-owned startup setting. Agent requests cannot override it.
  */
-export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAttachment }) {
+export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAttachment, approvalProfile }) {
   const ledger = new PresenceLedger(ledgerPath);
   const gates = new GateRegistry({ ledger, ticketDir, requireVerifiedAttachment });
+  const profile = normalizeApprovalProfile(
+    approvalProfile ?? process.env.PRESENCE_APPROVAL_PROFILE
+  );
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -75,39 +85,69 @@ export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAtt
         if (path === '/agent/gate' && req.method === 'POST') {
           const b = await readJson(req);
           const gate_kind = GATE_KINDS.includes(b.gate_kind) ? b.gate_kind : 'other';
-          const decision = enforceMode(b.mode, gate_kind);
+          const modeDecision = enforceMode(b.mode, gate_kind);
+          const humanDecision = decideHumanRequirement(gate_kind, profile);
           const id = newGateId();
+
+          if (!humanDecision.humanRequired) {
+            gates.bypass({
+              id,
+              mode: modeDecision.mode,
+              gate_kind,
+              host: b.host,
+              task: b.task,
+              instruction: b.instruction,
+              resumeHint: b.resume_hint,
+              reason: humanDecision.reason,
+            });
+
+            return json(res, 201, {
+              id,
+              state: 'retired',
+              human_required: false,
+              approval_profile: profile,
+              mode: modeDecision.mode,
+              mode_forced: modeDecision.forced,
+              mode_reason: modeDecision.reason,
+              console_url: null,
+              pager_url: null,
+            });
+          }
+
           let frameSha = null;
 
           if (b.frame_base64) {
             const buf = Buffer.from(b.frame_base64, 'base64');
             frameSha = hashFrame(buf);
             gates.open({
-              id, mode: decision.mode, gate_kind, host: b.host, task: b.task,
+              id, mode: modeDecision.mode, gate_kind, host: b.host, task: b.task,
               instruction: b.instruction, resumeHint: b.resume_hint, frameSha,
               handoffUrl: b.handoff_url, yieldTarget: b.yield_target,
             });
             gates.setFrame(id, buf, frameSha);
           } else {
             gates.open({
-              id, mode: decision.mode, gate_kind, host: b.host, task: b.task,
+              id, mode: modeDecision.mode, gate_kind, host: b.host, task: b.task,
               instruction: b.instruction, resumeHint: b.resume_hint, frameSha: null,
               handoffUrl: b.handoff_url, yieldTarget: b.yield_target,
             });
           }
 
-          if (decision.forced) {
+          if (modeDecision.forced) {
             ledger.append({
               id, event: 'rail.mode_forced', actor: 'rail', mode: 'yield', gate_kind,
-              note: decision.reason,
+              note: modeDecision.reason,
             });
           }
 
           return json(res, 201, {
             id,
-            mode: decision.mode,
-            mode_forced: decision.forced,
-            mode_reason: decision.reason,
+            state: 'open',
+            human_required: true,
+            approval_profile: profile,
+            mode: modeDecision.mode,
+            mode_forced: modeDecision.forced,
+            mode_reason: modeDecision.reason,
             console_url: `http://${lanAddress()}:${server.address().port}/h/${id}`,
             pager_url: `http://${lanAddress()}:${server.address().port}/pager`,
             verified_attachment_required: gates.requireVerifiedAttachment,
@@ -221,11 +261,14 @@ export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAtt
         }
       }
 
-      if (path === '/health') return json(res, 200, {
-        ok: true,
-        lan: lanAddress(),
-        verified_attachment_required: gates.requireVerifiedAttachment,
-      });
+      if (path === '/health') {
+        return json(res, 200, {
+          ok: true,
+          lan: lanAddress(),
+          approval_profile: profile,
+          verified_attachment_required: gates.requireVerifiedAttachment,
+        });
+      }
       return text(res, 404, 'not found');
     } catch (e) {
       if (e instanceof AttachmentAssuranceError) return text(res, 403, e.message);
@@ -233,5 +276,5 @@ export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAtt
     }
   });
 
-  return { server, gates, ledger };
+  return { server, gates, ledger, approvalProfile: profile };
 }

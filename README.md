@@ -25,6 +25,7 @@ That is enforced in code, not promised in a README:
 | Unverified LAN arrival cannot become a verified-human receipt | `src/attachment-assurance.js` + `src/gates.js` | assurance tests |
 | The browser never hides that it is automated | `src/bridge-cdp.js` | greps `src/` for stealth techniques |
 | No solving vendor can be pulled in | `package.json` | asserts zero dependencies |
+| An agent cannot grant itself an approval bypass | `src/policy.js` → server-owned profile | unknown profiles fail closed; bypass set is exact |
 
 Run the complete gate:
 
@@ -99,6 +100,52 @@ manufacturing verified-human evidence.
 
 See [`docs/ATTACHMENT_ASSURANCE.md`](docs/ATTACHMENT_ASSURANCE.md).
 
+### Approval profiles
+
+Presence separates a **local tool permission prompt** from a step where a person
+must actually act.
+
+The relay defaults to the regular, fail-closed profile:
+
+```bash
+PRESENCE_APPROVAL_PROFILE=prompt node src/cli.js serve
+```
+
+A trusted single-operator environment can pre-authorize local IDE, CLI, or tool
+permission prompts:
+
+```bash
+PRESENCE_APPROVAL_PROFILE=bypass_tool_approvals node src/cli.js serve
+```
+
+That profile retires only gates declared as:
+
+```js
+{ gate_kind: 'tool_approval' }
+```
+
+It does **not** bypass `anti_bot`, `otp`, `identity`, `consent`, `payment`,
+`signature`, or `other`. Those still open a human handoff. Unknown profile
+values normalize to `prompt`, and the approval profile is read when the relay
+starts; it is not accepted from `presence.pause(...)`, so an agent cannot
+promote itself.
+
+A pre-authorized tool prompt returns immediately with:
+
+```json
+{
+  "state": "retired",
+  "human_required": false,
+  "approval_profile": "bypass_tool_approvals",
+  "console_url": null,
+  "pager_url": null
+}
+```
+
+The terminal ticket remains pollable and the ledger records
+`rail.approval_bypassed`. It never writes `human.attached` or
+`human.released`, because no human attended.
+
 ## Run it
 
 ```bash
@@ -136,6 +183,10 @@ A future verified receipt may name a bounded operator handle only after a
 trusted WebAuthn adapter validates the exact gate and challenge. That adapter,
 credential enrollment, recovery policy, origin/RP configuration, counter store,
 and external witness do not exist in this repository today.
+
+For a pre-authorized local tool prompt, the receipt instead states that the rail
+retired it under the operator profile and that a human never attached.
+
 
 ## Current roadmap, in order
 

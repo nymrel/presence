@@ -10,6 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -22,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      actions: read # Read workflow metadata while analyzing this repository.
       contents: read # Read the exact source under analysis.
       security-events: write # Upload CodeQL results to the repository security surface.
     steps:
