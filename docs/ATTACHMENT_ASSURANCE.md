@@ -38,7 +38,8 @@ What must already have happened before Presence accepts this assurance:
 Ledger events:
 
 - `human.attached`, actor `human`;
-- `human.released`, actor `human`.
+- `human.released`, actor `human`, only when the same verified attachment
+  session presents its unexpired gate-bound capability.
 
 The core accepts only the adapter's bounded decision. It does not accept a browser's self-assertion that verification succeeded.
 
@@ -90,7 +91,22 @@ This keeps the receipt useful without turning it into an authentication-secret a
 
 ## Trusted adapter contract
 
-A host adapter passes its decision to `GateRegistry.attach(..., { verification })`. The decision must contain exactly:
+A host adapter generates a fresh session capability with
+`newAttachmentCapability()` and passes it beside its decision:
+
+```js
+const attachmentCapability = newAttachmentCapability();
+gates.attach(id, { verification, attachmentCapability });
+```
+
+The adapter keeps the raw capability and binds it to the authenticated browser
+session. Presence stores only its SHA-256 in live memory. The raw value must be
+sent in `x-presence-attachment-capability` on input and release requests. It is
+gate-specific, expires after five minutes by default, and is destroyed when the
+gate reaches a terminal state. It never appears in the pager, resume ticket, or
+ledger.
+
+The verification decision must contain exactly:
 
 ```json
 {
@@ -106,9 +122,22 @@ A host adapter passes its decision to `GateRegistry.attach(..., { verification }
 }
 ```
 
-The core rejects unknown fields, missing fields, a different gate, a different challenge digest, false user verification, malformed hashes, and unbounded identifiers.
+The core rejects unknown fields, missing fields, a different gate, a different
+challenge digest, false user verification, malformed hashes, unbounded
+identifiers, or a missing/malformed attachment capability. After attachment it
+rejects input or release from callers without the exact unexpired capability.
+Concurrent and replayed terminal releases can append only one event.
 
-This is an adapter contract, not a WebAuthn implementation. No verifier adapter, credential enrollment store, origin/RP configuration, browser ceremony, recovery policy, or counter store ships in this slice.
+`human.released` means that the same short-lived session established by the
+verified attachment authorized release. It does not claim that a second
+WebAuthn ceremony or fresh biometric check happened at release. A deployment
+that needs that stronger meaning must verify and consume a distinct
+release-bound assertion.
+
+This is an adapter and session-binding contract, not a WebAuthn implementation.
+No verifier adapter, credential enrollment store, origin/RP configuration,
+browser ceremony, secure capability-delivery mechanism, recovery policy, or
+counter store ships in this slice.
 
 ## Strict mode
 
@@ -118,7 +147,9 @@ Set:
 PRESENCE_REQUIRE_VERIFIED_ATTACH=1
 ```
 
-Then an unverified console cannot attach, relay input, or release the gate. The gate remains open and no human event is written.
+Then an unverified console cannot attach, relay input, or release the gate. A
+verified attachment also cannot relay input or release without its exact
+unexpired capability. The gate remains open and no release event is written.
 
 Strict mode is the required posture for any future enterprise or notarised receipt claim. It is not enabled by default because the current self-hosted LAN workflow has no verifier adapter or valid WebAuthn origin yet.
 

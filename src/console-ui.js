@@ -48,8 +48,17 @@ function esc(s) {
   ));
 }
 
+function safeExternalHref(value) {
+  try {
+    const url = new URL(String(value));
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : '#';
+  } catch {
+    return '#';
+  }
+}
+
 /** The gate console — what the operator lands on. */
-export function gatePage(gate) {
+export function gatePage(gate, { nonce = '' } = {}) {
   const isYield = gate.mode === 'yield';
   return `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -77,7 +86,7 @@ export function gatePage(gate) {
     <div class="note">Presence will not touch this step. It relays no input into a challenge — you act in the real session and tell it when you're through.</div>
     <button class="btn go" id="done">Done — I completed it</button>
   ` : isYield ? `
-    <a class="btn go locked" id="open" href="${esc(gate.handoffUrl || '#')}" target="_blank" rel="noopener" aria-disabled="true">Open in my browser</a>
+    <a class="btn go locked" id="open" href="${esc(safeExternalHref(gate.handoffUrl))}" target="_blank" rel="noopener" aria-disabled="true">Open in my browser</a>
     <div class="note">This opens in your own browser, in your own session. Presence never sees what you enter — it only waits for you to say you're done.</div>
     <button class="btn primary" id="done">I've done it</button>
   ` : `
@@ -88,7 +97,7 @@ export function gatePage(gate) {
   <button class="btn ghost" id="cancel">Can't do this now</button>
   <div class="status" id="status">Connecting to the local rail…</div>
 </div>
-<script>
+<script nonce="${esc(nonce)}">
 const ID=${JSON.stringify(gate.id)}, MODE=${JSON.stringify(gate.mode)};
 const $=(s)=>document.querySelector(s), status=$('#status');
 let closed=false, attached=false;
@@ -193,7 +202,7 @@ setInterval(async()=>{
 }
 
 /** The pager — the one URL the operator bookmarks. Buzzes when a gate opens. */
-export function pagerPage() {
+export function pagerPage({ nonce = '' } = {}) {
   return `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Presence</title><style>${BASE_CSS}</style></head><body>
@@ -203,7 +212,7 @@ export function pagerPage() {
   <div id="list"><div class="empty">Nothing needs you right now.<br>Leave this open — it'll buzz.</div></div>
   <div class="status" id="s">watching…</div>
 </div>
-<script>
+<script nonce="${esc(nonce)}">
 let seen=new Set(),primed=false;
 if('Notification'in window&&Notification.permission==='default'){
   document.body.addEventListener('click',()=>Notification.requestPermission(),{once:true});
@@ -212,15 +221,39 @@ async function tick(){
   try{
     const gates=await(await fetch('/pager/gates')).json();
     const list=document.getElementById('list');
-    if(!gates.length){list.innerHTML='<div class="empty">Nothing needs you right now.<br>Leave this open — it\\'ll buzz.</div>';}
-    else{
-      list.innerHTML=gates.map(g=>
-        '<a class="gate card" href="/h/'+g.id+'">'
-        +'<div class="row"><span class="pill '+(g.mode==='yield'?'yield':'')+'">'
-        +(g.mode==='yield'?'Your browser':'Live session')+'</span><span class="host">'+g.host+'</span></div>'
-        +'<div class="instruction">'+g.instruction+'</div>'
-        +'<div class="task" style="margin-top:6px">'+g.task+'</div></a>').join('');
-    }
+    const empty=()=>{
+      const node=document.createElement('div');
+      node.className='empty';
+      node.append('Nothing needs you right now.',document.createElement('br'),"Leave this open — it'll buzz.");
+      return node;
+    };
+    const gateCard=(g)=>{
+      const id=typeof g.id==='string'&&/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(g.id)?g.id:null;
+      if(!id)return null;
+      const card=document.createElement('a');
+      card.className='gate card';
+      card.href='/h/'+id;
+      const row=document.createElement('div');
+      row.className='row';
+      const pill=document.createElement('span');
+      pill.className='pill'+(g.mode==='yield'?' yield':'');
+      pill.textContent=g.mode==='yield'?'Your browser':'Live session';
+      const host=document.createElement('span');
+      host.className='host';
+      host.textContent=String(g.host??'');
+      row.append(pill,host);
+      const instruction=document.createElement('div');
+      instruction.className='instruction';
+      instruction.textContent=String(g.instruction??'');
+      const task=document.createElement('div');
+      task.className='task';
+      task.style.marginTop='6px';
+      task.textContent=String(g.task??'');
+      card.append(row,instruction,task);
+      return card;
+    };
+    const cards=gates.map(gateCard).filter(Boolean);
+    list.replaceChildren(...(cards.length?cards:[empty()]));
     for(const g of gates){
       if(!seen.has(g.id)){
         seen.add(g.id);

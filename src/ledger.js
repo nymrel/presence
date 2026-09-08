@@ -44,6 +44,9 @@ const ALLOWED_FIELDS = Object.freeze([
   'credential_sha256',
   'challenge_sha256',
   'user_verified',
+  'invocation_id',
+  'tool_name',
+  'action_sha256',
   'prev_hash',
   'hash',
 ]);
@@ -54,6 +57,8 @@ const REDACTED_KEYS = Object.freeze([
   'credential_id', 'cookie', 'session', 'address', 'street', 'url', 'text', 'keys',
   'challenge', 'assertion', 'signature', 'authenticator_data', 'client_data_json',
   'user_handle', 'public_key', 'attestation_object',
+  'capability', 'attachment_capability', 'approval_capability',
+  'trusted_tool_approval',
 ]);
 
 const ASSURANCE_FIELDS = Object.freeze([
@@ -68,6 +73,11 @@ const ASSURANCE_EVENTS = new Set([
   'console.released',
   'human.attached',
   'human.released',
+]);
+const APPROVAL_FIELDS = Object.freeze([
+  'invocation_id',
+  'tool_name',
+  'action_sha256',
 ]);
 const SHA256 = /^[a-f0-9]{64}$/;
 const HANDLE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
@@ -146,6 +156,24 @@ function validateAssuranceRecord(fields) {
   }
 }
 
+function validateApprovalRecord(fields) {
+  if (fields.event !== 'rail.approval_bypassed') {
+    const leaked = APPROVAL_FIELDS.filter((field) => fields[field] !== undefined);
+    if (leaked.length) {
+      throw new Error(
+        `presence-ledger: approval binding fields are only valid on rail.approval_bypassed: ${leaked.join(', ')}`
+      );
+    }
+    return;
+  }
+  if (fields.actor !== 'rail' || fields.gate_kind !== 'tool_approval') {
+    throw new Error('presence-ledger: approval bypass requires rail actor and tool_approval kind');
+  }
+  requireHandle(fields.invocation_id, 'invocation_id');
+  requireHandle(fields.tool_name, 'tool_name');
+  requireDigest(fields.action_sha256, 'action_sha256');
+}
+
 export class PresenceLedger {
   constructor(path) {
     this.path = path;
@@ -170,6 +198,7 @@ export class PresenceLedger {
    */
   append(fields) {
     validateAssuranceRecord(fields);
+    validateApprovalRecord(fields);
 
     for (const k of Object.keys(fields)) {
       if (REDACTED_KEYS.includes(k.toLowerCase())) {
@@ -235,7 +264,9 @@ export const _internals = {
   ALLOWED_FIELDS,
   ASSURANCE_EVENTS,
   ASSURANCE_FIELDS,
+  APPROVAL_FIELDS,
   REDACTED_KEYS,
   canonical,
   validateAssuranceRecord,
+  validateApprovalRecord,
 };

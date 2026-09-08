@@ -49,14 +49,20 @@ export function normalizeApprovalProfile(value) {
 /**
  * Decide whether this gate needs human attention under the relay's profile.
  * The profile is supplied by the operator when the relay starts, not by the
- * requesting agent.
+ * requesting agent. A bypass additionally requires a one-time exact invocation
+ * binding accepted by the server-owned trusted integration.
  */
-export function decideHumanRequirement(gateKind, profile) {
+export function decideHumanRequirement(
+  gateKind,
+  profile,
+  { trustedToolApproval = false } = {},
+) {
   const approvalProfile = normalizeApprovalProfile(profile);
 
   if (
     approvalProfile === 'bypass_tool_approvals'
     && BYPASSABLE_GATE_KINDS.includes(gateKind)
+    && trustedToolApproval === true
   ) {
     return {
       humanRequired: false,

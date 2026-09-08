@@ -1,7 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { runInNewContext } from 'node:vm';
 
-import { gatePage } from '../src/console-ui.js';
+import { gatePage, pagerPage } from '../src/console-ui.js';
 
 function page(mode = 'attach') {
   return gatePage({
@@ -52,5 +53,72 @@ describe('console UI fails closed with the relay', () => {
     const html = page('yield');
     assert.match(html, /id="open"[^>]+class="btn go locked"|class="btn go locked"[^>]+id="open"/);
     assert.match(html, /aria-disabled="true"/);
+  });
+
+  test('yield handoff links accept only HTTP and HTTPS URLs', () => {
+    const html = gatePage({
+      id: '00000000-0000-4000-8000-000000000000',
+      mode: 'yield',
+      gate_kind: 'consent',
+      host: 'console.example.test',
+      task: 'Approve bounded work',
+      instruction: 'Review and approve',
+      frameSha: null,
+      handoffUrl: 'javascript:alert(1)',
+      yieldTarget: 'own_browser',
+    });
+    assert.match(html, /id="open" href="#"/);
+    assert.doesNotMatch(html, /javascript:/i);
+  });
+
+  test('pager renders adversarial agent text as text and validates gate hrefs', async () => {
+    const html = pagerPage({ nonce: 'review-nonce' });
+    assert.match(html, /<script nonce="review-nonce">/);
+    assert.match(html, /host\.textContent=String\(g\.host\?\?''\)/);
+    assert.match(html, /instruction\.textContent=String\(g\.instruction\?\?''\)/);
+    assert.match(html, /task\.textContent=String\(g\.task\?\?''\)/);
+    assert.match(html, /\^\[0-9a-f\]\{8\}/);
+    assert.doesNotMatch(html, /innerHTML=gates|g\.host\+'<|g\.instruction\+'<|g\.task\+'</);
+
+    class FakeNode {
+      constructor(tag = '') {
+        this.tag = tag;
+        this.children = [];
+        this.style = {};
+        this.textContent = '';
+      }
+      append(...children) { this.children.push(...children); }
+      replaceChildren(...children) { this.children = children; }
+    }
+    const list = new FakeNode('div');
+    const status = new FakeNode('div');
+    const hostile = {
+      id: '00000000-0000-4000-8000-000000000000',
+      mode: 'attach',
+      host: '<svg onload="globalThis.pwned=true">',
+      instruction: '</div><script>globalThis.pwned=true</script>',
+      task: '\" onmouseover=\"globalThis.pwned=true',
+    };
+    const document = {
+      body: new FakeNode('body'),
+      createElement: (tag) => new FakeNode(tag),
+      getElementById: (id) => (id === 'list' ? list : status),
+    };
+    const script = html.match(/<script[^>]*>([\s\S]*?)<\/script>/)?.[1];
+    const context = {
+      document,
+      fetch: async () => ({ json: async () => [hostile] }),
+      navigator: {},
+      setInterval: () => {},
+      window: {},
+    };
+    await runInNewContext(`${script}\ntick()`, context);
+
+    const card = list.children[0];
+    assert.equal(card.href, `/h/${hostile.id}`);
+    assert.equal(card.children[0].children[1].textContent, hostile.host);
+    assert.equal(card.children[1].textContent, hostile.instruction);
+    assert.equal(card.children[2].textContent, hostile.task);
+    assert.equal(context.pwned, undefined);
   });
 });

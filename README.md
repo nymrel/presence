@@ -85,7 +85,9 @@ separate from a cryptographically verified human assertion.
   It records that the local console participated, not which person did so.
 - `webauthn-verified` is reserved for a trusted verifier adapter that has
   validated a fresh gate-bound WebAuthn assertion. Only that state may emit
-  `human.attached` / `human.released`, actor `human`.
+  `human.attached`. A later `human.released` event additionally requires the
+  short-lived capability bound to that verified attachment session; it does not
+  claim that a second WebAuthn ceremony happened at release.
 
 The core does **not** implement WebAuthn verification from scratch and no
 verifier adapter ships yet. The adapter contract is intentionally narrow and
@@ -111,24 +113,37 @@ The relay defaults to the regular, fail-closed profile:
 PRESENCE_APPROVAL_PROFILE=prompt node src/cli.js serve
 ```
 
-A trusted single-operator environment can pre-authorize local IDE, CLI, or tool
+A trusted host integration can enable pre-authorized local IDE, CLI, or tool
 permission prompts:
 
 ```bash
 PRESENCE_APPROVAL_PROFILE=bypass_tool_approvals node src/cli.js serve
 ```
 
-That profile retires only gates declared as:
+The profile alone does not bypass a generic agent request. Even a request
+declared as:
 
 ```js
 { gate_kind: 'tool_approval' }
 ```
 
-It does **not** bypass `anti_bot`, `otp`, `identity`, `consent`, `payment`,
-`signature`, or `other`. Those still open a human handoff. Unknown profile
-values normalize to `prompt`, and the approval profile is read when the relay
-starts; it is not accepted from `presence.pause(...)`, so an agent cannot
-promote itself.
+opens a human handoff unless trusted host code first calls
+`relay.issueTrustedToolApproval(...)`. That in-process API issues a random,
+one-time, 60-second capability bound to `gate_kind: "tool_approval"`, a bounded
+invocation ID, tool name, and SHA-256 of the exact canonical invocation. The
+agent must present that exact returned object as `trusted_tool_approval`; a
+missing, expired, replayed, cross-kind, or mismatched binding prompts normally.
+
+The raw capability never enters a ticket, pager response, or ledger row. The
+durable retired ticket and bypass ledger row keep only the bounded invocation
+binding and action digest. Host code is responsible for canonicalizing the
+invocation before hashing it and for keeping the one-time capability
+process-local.
+
+The profile does **not** bypass `anti_bot`, `otp`, `identity`, `consent`,
+`payment`, `signature`, or `other`. Those still open a human handoff.
+Unknown profile values normalize to `prompt`, and the approval profile is read
+when the relay starts; it is not accepted from `presence.pause(...)`.
 
 A pre-authorized tool prompt returns immediately with:
 

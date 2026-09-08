@@ -72,7 +72,8 @@ Challenge state must bind:
 - operator ID;
 - credential allowlist or account context;
 - gate ID;
-- exact intended event: `human.attached` or `human.released`;
+- exact intended event (`human.attached`, or `human.released` when a deployment
+  requires a fresh release assertion);
 - current ledger chain head or another immutable pre-event digest;
 - RP ID and exact allowed origin;
 - creation and expiration timestamps;
@@ -97,7 +98,31 @@ Before writing a human event, the verifier must reject unless all required check
 - gate ID, intended event, and pre-event ledger digest still match current state;
 - no other worker has already consumed the challenge or released the gate.
 
-Verification and challenge consumption must be one atomic state transition. A valid assertion that loses a race must not write a second release event.
+Verification and challenge consumption must be one atomic state transition. A
+valid assertion that loses a race must not write a second release event.
+
+### Verified session capability
+
+The current core contract permits release through continuity with a verified
+attachment rather than requiring a second WebAuthn ceremony. At attach time the
+trusted adapter must generate a separate 32-byte random capability, deliver it
+only to the authenticated browser session, and bind its SHA-256 server-side to:
+
+- the exact gate and verified attachment;
+- the operator and credential decision already accepted for that attachment;
+- a short expiration time;
+- input and one terminal release for that gate only.
+
+The pager, gate listing, ledger, resume ticket, URLs, and error messages must
+never expose the raw capability. Missing, expired, cross-gate, and replayed
+capabilities fail closed before input injection or a release event. A successful
+terminal release destroys the server-side session state before another request
+can win.
+
+This bearer capability proves continuity with the verified attachment session;
+it is not a fresh user-verification ceremony. A deployment that advertises
+fresh verification at release must instead issue and atomically consume a
+distinct `human.released` challenge.
 
 ## Receipt shape
 

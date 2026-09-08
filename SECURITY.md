@@ -27,7 +27,18 @@ Include the affected commit, operating system and Node version, the smallest syn
 
 Opening the current LAN console proves only that a client reached the console. It emits rail-authored `console.attached` / `console.released` events with `lan-unverified` assurance and cannot emit `human.attached` or `human.released`. This is acceptable only for the current single-operator experimental LAN posture and is not an identity guarantee.
 
-The reserved `webauthn-verified` mode requires a trusted adapter and the full passkey-bound attach/release contract. It is **not built**. Until a reviewed WebAuthn implementation satisfies `docs/PASSKEY_THREAT_MODEL.md`, Presence must not claim to prove which human acted.
+The reserved `webauthn-verified` mode requires a trusted adapter and the full
+passkey-bound attach/session contract. Verified input and release additionally
+require the short-lived capability bound to that attachment. A release receipt
+proves continuity with that session; it does not claim a fresh biometric or
+second WebAuthn ceremony. The verifier and authenticated capability-delivery
+path are **not built**. Until a reviewed implementation satisfies
+`docs/PASSKEY_THREAT_MODEL.md`, Presence must not claim to prove which human
+acted.
+
+The pager renders agent-supplied labels with DOM `textContent`, validates gate
+links, and receives a nonce-bound Content Security Policy. Treat any regression
+to HTML-string concatenation or permissive script policy as a security issue.
 
 ## Out of scope
 

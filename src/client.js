@@ -35,9 +35,10 @@ export class Presence {
    *   mode, console_url, pager_url, mode_forced
    * }.
    *
-   * A server configured with `bypass_tool_approvals` may immediately return a
-   * terminal `retired` state for `tool_approval`. The requesting agent cannot
-   * select or override that profile.
+   * A server configured with `bypass_tool_approvals` returns a terminal
+   * `retired` state only when trusted host code supplied a fresh capability
+   * bound to the exact tool invocation. A generic `tool_approval` request still
+   * prompts, and the requesting agent cannot select or override the profile.
    *
    * @param {object} o
    * @param {'attach'|'yield'} o.mode        requested; policy may force yield

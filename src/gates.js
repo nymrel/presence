@@ -13,7 +13,7 @@
  *      needs to wake up correctly: gate id, what it was doing, what it does next.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -53,10 +53,14 @@ export class GateRegistry {
     ledger,
     ticketDir,
     requireVerifiedAttachment = process.env.PRESENCE_REQUIRE_VERIFIED_ATTACH === '1',
+    attachmentCapabilityTtlMs = 5 * 60_000,
+    now = Date.now,
   }) {
     this.ledger = ledger;
     this.ticketDir = ticketDir;
     this.requireVerifiedAttachment = Boolean(requireVerifiedAttachment);
+    this.attachmentCapabilityTtlMs = attachmentCapabilityTtlMs;
+    this.now = now;
     mkdirSync(ticketDir, { recursive: true });
     /** @type {Map<string, object>} in-memory only */
     this.live = new Map();
@@ -80,6 +84,7 @@ export class GateRegistry {
       operator: null,
       device: null,
       attachment: null,
+      attachmentSession: null,
       // Server-generated, memory-only. A trusted verifier adapter must bind its
       // decision to the digest of this exact value and this exact gate id.
       attachmentChallenge: randomBytes(32).toString('base64url'),
@@ -102,13 +107,38 @@ export class GateRegistry {
    * durable ticket and observe only that the rail retired the gate under its
    * server-side approval profile.
    */
-  bypass({ id, mode, gate_kind, host, task, instruction, resumeHint, reason }) {
+  bypass({
+    id,
+    mode,
+    gate_kind,
+    host,
+    task,
+    instruction,
+    resumeHint,
+    reason,
+    approvalBinding,
+  }) {
     if (!BYPASSABLE_GATE_KINDS.includes(gate_kind)) {
       throw new Error(
         `approval bypass refused for gate_kind "${gate_kind}"; `
         + `allowed: ${BYPASSABLE_GATE_KINDS.join(', ')}`
       );
     }
+    if (
+      !approvalBinding
+      || approvalBinding.gate_kind !== gate_kind
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(approvalBinding.invocation_id || '')
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(approvalBinding.tool_name || '')
+      || !/^[a-f0-9]{64}$/.test(approvalBinding.action_sha256 || '')
+    ) {
+      throw new Error('approval bypass refused without an exact trusted invocation binding');
+    }
+    const durableBinding = {
+      gate_kind,
+      invocation_id: approvalBinding.invocation_id,
+      tool_name: approvalBinding.tool_name,
+      action_sha256: approvalBinding.action_sha256,
+    };
 
     this.ledger.append({
       id,
@@ -120,6 +150,9 @@ export class GateRegistry {
       task,
       instruction,
       outcome: 'retired',
+      invocation_id: durableBinding.invocation_id,
+      tool_name: durableBinding.tool_name,
+      action_sha256: durableBinding.action_sha256,
       note: reason || 'operator profile pre-authorized this local tool prompt',
     });
 
@@ -132,6 +165,7 @@ export class GateRegistry {
       resumeHint,
       state: 'retired',
       outcome: 'retired',
+      approval_binding: durableBinding,
     });
 
     return this.readTicket(id);
@@ -158,8 +192,10 @@ export class GateRegistry {
    *
    * `verification` is not a browser assertion. It is the bounded result of a
    * host-trusted adapter that already performed cryptographic verification.
+   * The adapter separately keeps the raw `attachmentCapability`; Presence
+   * retains only its digest and requires the raw value for input and release.
    */
-  attach(id, { device, verification } = {}) {
+  attach(id, { device, verification, attachmentCapability } = {}) {
     const g = this.live.get(id);
     const mayUpgrade = g?.state === 'attached' && !isVerifiedAttachment(g.attachment) && verification;
     if (!g || (g.state !== 'open' && !mayUpgrade)) return g;
@@ -178,8 +214,23 @@ export class GateRegistry {
     }
 
     const verified = isVerifiedAttachment(attachment);
+    let attachmentSession = null;
+    if (verified) {
+      if (!/^[A-Za-z0-9_-]{43}$/.test(attachmentCapability || '')) {
+        throw new AttachmentAssuranceError(
+          'trusted verification requires a fresh 32-byte attachment capability'
+        );
+      }
+      attachmentSession = {
+        capabilitySha256: createHash('sha256')
+          .update(attachmentCapability, 'utf8')
+          .digest('hex'),
+        expiresAt: this.now() + this.attachmentCapabilityTtlMs,
+      };
+    }
     g.state = 'attached';
     g.attachment = attachment;
+    g.attachmentSession = attachmentSession;
     g.operator = attachment.operator;
     g.device = attachment.device;
     g.attachedAt = Date.now();
@@ -210,7 +261,7 @@ export class GateRegistry {
     return g;
   }
 
-  assertUsableAttachment(g, operation) {
+  assertUsableAttachment(g, operation, attachmentCapability = null) {
     if (!g?.attachment) {
       throw new AttachmentAssuranceError(
         `console attachment is required before ${operation}`
@@ -226,9 +277,30 @@ export class GateRegistry {
         `verified attachment is required before ${operation}`
       );
     }
+    if (isVerifiedAttachment(g.attachment)) {
+      if (!g.attachmentSession || this.now() >= g.attachmentSession.expiresAt) {
+        throw new AttachmentAssuranceError(
+          `verified attachment capability expired before ${operation}`
+        );
+      }
+      if (!/^[A-Za-z0-9_-]{43}$/.test(attachmentCapability || '')) {
+        throw new AttachmentAssuranceError(
+          `verified attachment capability is required before ${operation}`
+        );
+      }
+      const supplied = createHash('sha256')
+        .update(attachmentCapability, 'utf8')
+        .digest();
+      const expected = Buffer.from(g.attachmentSession.capabilitySha256, 'hex');
+      if (!timingSafeEqual(supplied, expected)) {
+        throw new AttachmentAssuranceError(
+          `verified attachment capability is invalid for ${operation}`
+        );
+      }
+    }
   }
 
-  countInput(id, kind) {
+  countInput(id, kind, { attachmentCapability } = {}) {
     const g = this.live.get(id);
     if (!g) return;
     if (g.mode !== 'attach') {
@@ -236,21 +308,22 @@ export class GateRegistry {
         'yield-mode gates cannot accept relayed input'
       );
     }
-    this.assertUsableAttachment(g, 'input');
+    this.assertUsableAttachment(g, 'input', attachmentCapability);
     g.state = 'acting';
     g.inputKinds[kind] = (g.inputKinds[kind] || 0) + 1;
   }
 
-  release(id, outcome = 'resumed') {
+  release(id, outcome = 'resumed', { attachmentCapability } = {}) {
     const g = this.live.get(id);
     if (!g) return null;
-    this.assertUsableAttachment(g, 'release');
+    this.assertUsableAttachment(g, 'release', attachmentCapability);
 
     const verified = isVerifiedAttachment(g.attachment);
     const attachment = g.attachment;
     g.state = outcome === 'resumed' ? 'released' : outcome;
     g.releasedAt = Date.now();
     g.frame = null;
+    g.attachmentSession = null;
 
     this.ledger.append({
       id,
@@ -286,6 +359,7 @@ export class GateRegistry {
     g.state = 'retired';
     g.releasedAt = Date.now();
     g.frame = null;
+    g.attachmentSession = null;
 
     this.ledger.append({
       id, event: 'gate.retired', actor: 'agent', mode: g.mode,

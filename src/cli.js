@@ -44,6 +44,9 @@ if (cmd === 'serve') {
     console.log(`  agent API   http://127.0.0.1:${PORT}/agent   (loopback only)`);
     console.log(`  pager       http://${lan}:${PORT}/pager      <- open this on the phone`);
     console.log(`  approvals   ${approvalProfile}`);
+    if (approvalProfile === 'bypass_tool_approvals') {
+      console.log('              trusted invocation capability required');
+    }
     console.log(`  ledger      ${LEDGER}`);
     if (cdpPort) console.log(`  attach      relaying input to CDP :${cdpPort}`);
   });

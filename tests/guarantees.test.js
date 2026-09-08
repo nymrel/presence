@@ -25,6 +25,7 @@ import {
 } from '../src/policy.js';
 import { Presence } from '../src/client.js';
 import { createRelay } from '../src/relay.js';
+import { TrustedApprovalRegistry } from '../src/trusted-approvals.js';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
 
@@ -109,11 +110,20 @@ describe('approval profiles fail closed', () => {
     assert.equal(d.approvalProfile, 'prompt');
   });
 
-  test('the permissive profile bypasses only local tool approvals', () => {
+  test('the permissive profile requires a trusted local tool approval binding', () => {
     assert.deepEqual(BYPASSABLE_GATE_KINDS, ['tool_approval']);
     assert.equal(
       decideHumanRequirement('tool_approval', 'bypass_tool_approvals').humanRequired,
-      false
+      true,
+      'a generic agent classification cannot authorize its own bypass',
+    );
+    assert.equal(
+      decideHumanRequirement(
+        'tool_approval',
+        'bypass_tool_approvals',
+        { trustedToolApproval: true },
+      ).humanRequired,
+      false,
     );
 
     for (const kind of GATE_KINDS.filter((k) => k !== 'tool_approval')) {
@@ -160,16 +170,28 @@ describe('approval profiles fail closed', () => {
       instruction: 'Approve the local tool call',
       resumeHint: 'continue after approval',
       reason: 'operator profile pre-authorized local tool prompts',
+      approvalBinding: {
+        gate_kind: 'tool_approval',
+        invocation_id: 'direct-registry-test',
+        tool_name: 'node-test',
+        action_sha256: 'a'.repeat(64),
+        capability: 'must-not-persist',
+      },
     });
 
     assert.equal(ticket.state, 'retired');
     assert.equal(ticket.outcome, 'retired');
+    assert.equal(ticket.approval_binding.invocation_id, 'direct-registry-test');
+    assert.ok(!JSON.stringify(ticket).includes('must-not-persist'));
     assert.equal(gates.get(id), null);
 
     const rows = ledger.receipt(id);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].event, 'rail.approval_bypassed');
     assert.equal(rows[0].actor, 'rail');
+    assert.equal(rows[0].invocation_id, 'direct-registry-test');
+    assert.equal(rows[0].tool_name, 'node-test');
+    assert.equal(rows[0].action_sha256, 'a'.repeat(64));
     assert.equal(rows.some((r) => r.event.startsWith('human.')), false);
   });
 
@@ -182,11 +204,20 @@ describe('approval profiles fail closed', () => {
 
   test('an agent request cannot select the permissive profile', async (t) => {
     const root = mkdtempSync(join(tmpdir(), 'presence-relay-prompt-'));
-    const { server } = createRelay({
+    const { server, issueTrustedToolApproval } = createRelay({
       ledgerPath: join(root, 'ledger.jsonl'),
       ticketDir: join(root, 'tickets'),
       approvalProfile: 'prompt',
     });
+    assert.throws(
+      () => issueTrustedToolApproval({
+        gate_kind: 'tool_approval',
+        invocation_id: 'untrusted-invocation',
+        tool_name: 'node-test',
+        action_sha256: 'a'.repeat(64),
+      }),
+      /profile does not permit/,
+    );
 
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -219,9 +250,48 @@ describe('approval profiles fail closed', () => {
     assert.equal(pager[0].id, body.id);
   });
 
-  test('the relay returns a pollable retired gate without paging a human', async (t) => {
+  test('trusted approval capabilities are exact, one-time, and expiring', () => {
+    let now = 1_000;
+    const approvals = new TrustedApprovalRegistry({ now: () => now, ttlMs: 100 });
+    const issued = approvals.issue({
+      gate_kind: 'tool_approval',
+      invocation_id: 'invocation-1',
+      tool_name: 'node-test',
+      action_sha256: 'a'.repeat(64),
+    });
+
+    assert.equal(approvals.consume(issued, 'payment'), null, 'kind mismatch must prompt');
+    assert.equal(
+      approvals.consume({ ...issued, invocation_id: 'invocation-2' }, 'tool_approval'),
+      null,
+      'invocation mismatch must prompt',
+    );
+    assert.equal(
+      approvals.consume({ ...issued, tool_name: 'different-tool' }, 'tool_approval'),
+      null,
+      'tool mismatch must prompt',
+    );
+    assert.equal(
+      approvals.consume({ ...issued, action_sha256: 'c'.repeat(64) }, 'tool_approval'),
+      null,
+      'action mismatch must prompt',
+    );
+    assert.equal(approvals.consume(issued, 'tool_approval')?.invocation_id, 'invocation-1');
+    assert.equal(approvals.consume(issued, 'tool_approval'), null, 'capability is one-time');
+
+    const expiring = approvals.issue({
+      gate_kind: 'tool_approval',
+      invocation_id: 'invocation-expiring',
+      tool_name: 'node-test',
+      action_sha256: 'b'.repeat(64),
+    });
+    now += 100;
+    assert.equal(approvals.consume(expiring, 'tool_approval'), null, 'expiry fails closed');
+  });
+
+  test('generic tool approvals prompt and an exact trusted invocation retires', async (t) => {
     const root = mkdtempSync(join(tmpdir(), 'presence-relay-'));
-    const { server } = createRelay({
+    const { server, issueTrustedToolApproval } = createRelay({
       ledgerPath: join(root, 'ledger.jsonl'),
       ticketDir: join(root, 'tickets'),
       approvalProfile: 'bypass_tool_approvals',
@@ -234,12 +304,40 @@ describe('approval profiles fail closed', () => {
     t.after(() => new Promise((resolve) => server.close(resolve)));
 
     const base = `http://127.0.0.1:${server.address().port}`;
+    const generic = await fetch(`${base}/agent/gate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'yield',
+        gate_kind: 'tool_approval',
+        trusted_tool_approval: {
+          capability: 'A'.repeat(43),
+          invocation_id: 'self-minted',
+          tool_name: 'payments',
+          action_sha256: 'f'.repeat(64),
+        },
+        host: 'payments.example',
+        task: 'Send payment',
+        instruction: 'Confirm a charge',
+      }),
+    });
+    const genericBody = await generic.json();
+    assert.equal(genericBody.state, 'open');
+    assert.equal(genericBody.human_required, true);
+
+    const trustedToolApproval = issueTrustedToolApproval({
+      gate_kind: 'tool_approval',
+      invocation_id: 'test-invocation-1',
+      tool_name: 'node-test',
+      action_sha256: 'a'.repeat(64),
+    });
     const opened = await fetch(`${base}/agent/gate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         mode: 'attach',
         gate_kind: 'tool_approval',
+        trusted_tool_approval: trustedToolApproval,
         host: 'localhost',
         task: 'Run the approved local test command',
         instruction: 'Approve this local tool call',
@@ -259,7 +357,7 @@ describe('approval profiles fail closed', () => {
     assert.equal(polled.outcome, 'retired');
 
     const pager = await (await fetch(`${base}/pager/gates`)).json();
-    assert.deepEqual(pager, []);
+    assert.deepEqual(pager.map((gate) => gate.id), [genericBody.id]);
   });
 });
 

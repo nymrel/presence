@@ -7,7 +7,7 @@
  * user handles, and authenticator data never enter the ledger contract.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 export const ATTACHMENT_ASSURANCES = Object.freeze([
   'lan-unverified',
@@ -38,6 +38,11 @@ export class AttachmentAssuranceError extends Error {
 
 export function sha256Text(value) {
   return createHash('sha256').update(String(value), 'utf8').digest('hex');
+}
+
+/** Generate the bearer capability a trusted adapter binds to one attachment. */
+export function newAttachmentCapability() {
+  return randomBytes(32).toString('base64url');
 }
 
 export function normalizeDevice(value) {

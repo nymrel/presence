@@ -100,7 +100,8 @@ The core now uses two explicit assurance states:
   `console.released` events. It proves only that a console participated.
 - `webauthn-verified`: reserved for a trusted host adapter that verified a fresh
   gate-bound WebAuthn assertion with required user verification. Only this state
-  may emit `human.attached` and `human.released`.
+  may emit `human.attached`. It may emit `human.released` only when the caller
+  presents the short-lived capability bound to that verified attachment.
 
 `PRESENCE_REQUIRE_VERIFIED_ATTACH=1` blocks unverified attach, input, and release.
 That is the only acceptable posture for a future named-human or enterprise audit
@@ -109,8 +110,9 @@ claim.
 The core contract and refusal behavior are implemented in the current draft.
 The actual WebAuthn verifier adapter, credential enrollment, registration
 ceremony, expected-origin/RP configuration, counter store, recovery process,
-and browser ceremony remain `unmeasured` and unbuilt. No enterprise-ready claim
-is permitted until those pieces pass independent review.
+browser ceremony, and authenticated capability delivery remain `unmeasured`
+and unbuilt. No enterprise-ready claim is permitted until those pieces pass
+independent review.
 
 Presence stores only bounded operator/verifier handles, coarse device class, and
 SHA-256 bindings for credential ID and challenge. Raw assertions, credentials,

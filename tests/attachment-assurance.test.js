@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 
 import {
   AttachmentAssuranceError,
+  newAttachmentCapability,
   sha256Text,
   verifiedAttachmentDecision,
 } from '../src/attachment-assurance.js';
@@ -113,14 +114,19 @@ describe('attachment assurance is honest by construction', () => {
   test('a gate-bound verified decision may emit human events', () => {
     const { gates, id, ledger } = fixture({ requireVerifiedAttachment: true });
     const decision = verifiedDecision(gates, id);
+    const attachmentCapability = newAttachmentCapability();
 
-    const gate = gates.attach(id, { device: 'unknown', verification: decision });
+    const gate = gates.attach(id, {
+      device: 'unknown',
+      verification: decision,
+      attachmentCapability,
+    });
     assert.equal(gate.attachment.assurance, 'webauthn-verified');
     assert.equal(gate.operator, 'jalen');
     assert.equal(gates.getAttachmentChallenge(id), null, 'verified challenge is consumed');
 
-    gates.countInput(id, 'pointer');
-    gates.release(id, 'resumed');
+    gates.countInput(id, 'pointer', { attachmentCapability });
+    gates.release(id, 'resumed', { attachmentCapability });
 
     const attached = ledger.receipt(id).find((row) => row.event === 'human.attached');
     const released = ledger.receipt(id).find((row) => row.event === 'human.released');
@@ -167,6 +173,10 @@ describe('attachment assurance is honest by construction', () => {
         verification: { ...verifiedDecision(gates, id), raw_assertion: 'forbidden' },
       }),
       /fields are not exact/,
+    );
+    assert.throws(
+      () => gates.attach(id, { verification: verifiedDecision(gates, id) }),
+      /requires a fresh 32-byte attachment capability/,
     );
   });
 
@@ -215,6 +225,8 @@ describe('attachment assurance is honest by construction', () => {
       'client_data_json',
       'user_handle',
       'public_key',
+      'attachment_capability',
+      'approval_capability',
     ]) {
       assert.throws(
         () => ledger.append({ id: 'raw-proof', event: 'x', [field]: 'secret' }),

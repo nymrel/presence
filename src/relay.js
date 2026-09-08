@@ -10,6 +10,7 @@
  */
 
 import { createServer } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { AttachmentAssuranceError } from './attachment-assurance.js';
 import { GateRegistry, GATE_KINDS } from './gates.js';
@@ -21,6 +22,7 @@ import {
   validateInput,
 } from './policy.js';
 import { gatePage, pagerPage } from './console-ui.js';
+import { TrustedApprovalRegistry } from './trusted-approvals.js';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
@@ -36,8 +38,32 @@ function json(res, code, obj) {
   res.writeHead(code, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) });
   res.end(body);
 }
-function html(res, code, body) {
-  res.writeHead(code, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+function pageNonce() {
+  return randomBytes(18).toString('base64');
+}
+
+export function contentSecurityPolicy(nonce = null) {
+  const scriptSource = nonce ? `'nonce-${nonce}'` : "'none'";
+  return [
+    "default-src 'self'",
+    "base-uri 'none'",
+    "connect-src 'self'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+    "img-src 'self' data:",
+    "object-src 'none'",
+    `script-src ${scriptSource}`,
+    "style-src 'unsafe-inline'",
+  ].join('; ');
+}
+
+function html(res, code, body, nonce = null) {
+  res.writeHead(code, {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+    'content-security-policy': contentSecurityPolicy(nonce),
+    'x-content-type-options': 'nosniff',
+  });
   res.end(body);
 }
 function text(res, code, body) {
@@ -64,13 +90,39 @@ async function readJson(req, limit = 8 * 1024 * 1024) {
  * @param {boolean} [opts.requireVerifiedAttachment] fail closed without host-verified assurance
  * @param {'prompt'|'bypass_tool_approvals'} [opts.approvalProfile]
  *   Operator-owned startup setting. Agent requests cannot override it.
+ * @param {number} [opts.approvalCapabilityTtlMs]
+ * @param {number} [opts.attachmentCapabilityTtlMs]
+ * @param {()=>number} [opts.now] injectable clock for deterministic expiry tests
  */
-export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAttachment, approvalProfile }) {
+export function createRelay({
+  ledgerPath,
+  ticketDir,
+  onInput,
+  requireVerifiedAttachment,
+  approvalProfile,
+  approvalCapabilityTtlMs,
+  attachmentCapabilityTtlMs,
+  now,
+}) {
   const ledger = new PresenceLedger(ledgerPath);
-  const gates = new GateRegistry({ ledger, ticketDir, requireVerifiedAttachment });
+  const gates = new GateRegistry({
+    ledger,
+    ticketDir,
+    requireVerifiedAttachment,
+    attachmentCapabilityTtlMs,
+    now,
+  });
   const profile = normalizeApprovalProfile(
     approvalProfile ?? process.env.PRESENCE_APPROVAL_PROFILE
   );
+  const approvals = new TrustedApprovalRegistry({ now, ttlMs: approvalCapabilityTtlMs });
+
+  const issueTrustedToolApproval = (binding) => {
+    if (profile !== 'bypass_tool_approvals') {
+      throw new Error('presence-approval: relay profile does not permit tool approval bypass');
+    }
+    return approvals.issue(binding);
+  };
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -86,7 +138,12 @@ export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAtt
           const b = await readJson(req);
           const gate_kind = GATE_KINDS.includes(b.gate_kind) ? b.gate_kind : 'other';
           const modeDecision = enforceMode(b.mode, gate_kind);
-          const humanDecision = decideHumanRequirement(gate_kind, profile);
+          const approvalBinding = profile === 'bypass_tool_approvals'
+            ? approvals.consume(b.trusted_tool_approval, gate_kind)
+            : null;
+          const humanDecision = decideHumanRequirement(gate_kind, profile, {
+            trustedToolApproval: Boolean(approvalBinding),
+          });
           const id = newGateId();
 
           if (!humanDecision.humanRequired) {
@@ -99,6 +156,7 @@ export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAtt
               instruction: b.instruction,
               resumeHint: b.resume_hint,
               reason: humanDecision.reason,
+              approvalBinding,
             });
 
             return json(res, 201, {
@@ -186,7 +244,10 @@ export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAtt
       }
 
       // ---------- pager ----------
-      if (path === '/pager') return html(res, 200, pagerPage());
+      if (path === '/pager') {
+        const nonce = pageNonce();
+        return html(res, 200, pagerPage({ nonce }), nonce);
+      }
       if (path === '/pager/gates') {
         const open = [...gates.live.values()]
           .filter((g) => g.state === 'open' || g.state === 'attached' || g.state === 'acting')
@@ -208,7 +269,10 @@ export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAtt
         if (!g) return html(res, 404, '<body style="background:#0b0d10;color:#8b95a6;font:16px system-ui;padding:48px;text-align:center">This gate is no longer open.</body>');
         const sub = hm[3];
 
-        if (!sub) return html(res, 200, gatePage(g));
+        if (!sub) {
+          const nonce = pageNonce();
+          return html(res, 200, gatePage(g, { nonce }), nonce);
+        }
 
         if (sub === 'frame') {
           if (!g.frame) return text(res, 404, 'no frame');
@@ -245,7 +309,12 @@ export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAtt
           } catch (e) {
             return text(res, 400, e.message);
           }
-          gates.countInput(g.id, clean.kind);
+          const attachmentCapability = req.headers['x-presence-attachment-capability'];
+          gates.countInput(g.id, clean.kind, {
+            attachmentCapability: typeof attachmentCapability === 'string'
+              ? attachmentCapability
+              : null,
+          });
           if (onInput) await onInput(g, clean);
           return json(res, 200, { ok: true, assurance: g.attachment?.assurance ?? null });
         }
@@ -253,7 +322,12 @@ export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAtt
         if (sub === 'release' && req.method === 'POST') {
           const b = await readJson(req);
           const outcome = ['resumed', 'abandoned'].includes(b.outcome) ? b.outcome : 'resumed';
-          const released = gates.release(g.id, outcome);
+          const attachmentCapability = req.headers['x-presence-attachment-capability'];
+          const released = gates.release(g.id, outcome, {
+            attachmentCapability: typeof attachmentCapability === 'string'
+              ? attachmentCapability
+              : null,
+          });
           return json(res, 200, {
             ok: true,
             assurance: released?.attachment?.assurance ?? null,
@@ -276,5 +350,11 @@ export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAtt
     }
   });
 
-  return { server, gates, ledger, approvalProfile: profile };
+  return {
+    server,
+    gates,
+    ledger,
+    approvalProfile: profile,
+    issueTrustedToolApproval,
+  };
 }
