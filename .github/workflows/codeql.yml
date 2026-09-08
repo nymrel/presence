@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: read
+  actions: read # Read workflow metadata for CodeQL analysis.
   contents: read
 
 concurrency:
