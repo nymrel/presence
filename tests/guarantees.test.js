@@ -80,7 +80,7 @@ describe('the ledger cannot record what a human entered', () => {
 
   test('input_kinds keeps counts and discards anything non-numeric', () => {
     const l = new PresenceLedger(path);
-    const rec = l.append({ id: 'b', event: 'human.released', input_kinds: { pointer: 2, key: '4242424242424242' } });
+    const rec = l.append({ id: 'b', event: 'rail.input-summary', input_kinds: { pointer: 2, key: '4242424242424242' } });
     assert.equal(rec.input_kinds.pointer, 2);
     assert.equal(rec.input_kinds.key, undefined, 'a non-integer must never survive into the ledger');
   });
@@ -109,7 +109,6 @@ describe('the browser does not pretend to be human', () => {
     for (const f of readdirSync(SRC)) {
       if (!f.endsWith('.js')) continue;
       const body = readFileSync(join(SRC, f), 'utf8');
-      // strip comments so our own prose about NOT doing this doesn't trip the test
       const code = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
       for (const p of STEALTH_PATTERNS) {
         if (code.includes(p)) offenders.push(`${f}: ${p}`);

@@ -19,15 +19,20 @@
   ],
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0 <25"
   },
   "bin": {
     "presence": "./src/cli.js"
   },
+  "files": [
+    "src/"
+  ],
   "scripts": {
+    "check": "node scripts/verify-release-contract.mjs && node --test",
+    "demo:dor": "node demo/dor-lookup.js",
     "serve": "node src/cli.js serve",
-    "test": "node --test tests/guarantees.test.js",
-    "demo:dor": "node demo/dor-lookup.js"
+    "test": "node --test",
+    "verify:release": "node scripts/verify-release-contract.mjs"
   },
   "dependencies": {},
   "devDependencies": {}

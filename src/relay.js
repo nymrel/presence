@@ -6,13 +6,12 @@
  *   /pager    — the page the operator keeps open. It buzzes.
  *
  * Deliberately LAN-only. There is no cloud hop, so a screenshot of a
- * half-filled government form never leaves the operator's own network. That
- * started as a constraint (no spend, no accounts) and turned out to be the
- * better design.
+ * half-filled form never leaves the operator's own network.
  */
 
 import { createServer } from 'node:http';
 import { networkInterfaces } from 'node:os';
+import { AttachmentAssuranceError } from './attachment-assurance.js';
 import { GateRegistry, GATE_KINDS } from './gates.js';
 import { PresenceLedger, newGateId, hashFrame } from './ledger.js';
 import { enforceMode, validateInput } from './policy.js';
@@ -57,10 +56,11 @@ async function readJson(req, limit = 8 * 1024 * 1024) {
  * @param {string} opts.ledgerPath
  * @param {string} opts.ticketDir
  * @param {(gate:object, input:object)=>Promise<void>} [opts.onInput] injector for attach mode
+ * @param {boolean} [opts.requireVerifiedAttachment] fail closed without host-verified assurance
  */
-export function createRelay({ ledgerPath, ticketDir, onInput }) {
+export function createRelay({ ledgerPath, ticketDir, onInput, requireVerifiedAttachment }) {
   const ledger = new PresenceLedger(ledgerPath);
-  const gates = new GateRegistry({ ledger, ticketDir });
+  const gates = new GateRegistry({ ledger, ticketDir, requireVerifiedAttachment });
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -110,11 +110,10 @@ export function createRelay({ ledgerPath, ticketDir, onInput }) {
             mode_reason: decision.reason,
             console_url: `http://${lanAddress()}:${server.address().port}/h/${id}`,
             pager_url: `http://${lanAddress()}:${server.address().port}/pager`,
+            verified_attachment_required: gates.requireVerifiedAttachment,
           });
         }
 
-        // Retire a gate whose need evaporated. Agent-authored, and NOT a
-        // release: no human.attached is ever written by an agent.
         const rm = path.match(/^\/agent\/gate\/([0-9a-f-]{36})\/retire$/i);
         if (rm && req.method === 'POST') {
           const b = await readJson(req);
@@ -133,6 +132,7 @@ export function createRelay({ ledgerPath, ticketDir, onInput }) {
             state: g ? g.state : t.state,
             outcome: t?.outcome ?? null,
             mode: g?.mode ?? t?.mode,
+            assurance: g?.attachment?.assurance ?? t?.assurance ?? null,
             input_kinds: g?.inputKinds ?? {},
           });
         }
@@ -150,7 +150,14 @@ export function createRelay({ ledgerPath, ticketDir, onInput }) {
       if (path === '/pager/gates') {
         const open = [...gates.live.values()]
           .filter((g) => g.state === 'open' || g.state === 'attached' || g.state === 'acting')
-          .map((g) => ({ id: g.id, host: g.host, task: g.task, instruction: g.instruction, mode: g.mode }));
+          .map((g) => ({
+            id: g.id,
+            host: g.host,
+            task: g.task,
+            instruction: g.instruction,
+            mode: g.mode,
+            assurance: g.attachment?.assurance ?? null,
+          }));
         return json(res, 200, open);
       }
 
@@ -168,13 +175,24 @@ export function createRelay({ ledgerPath, ticketDir, onInput }) {
           res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
           return res.end(g.frame);
         }
-        if (sub === 'state') return json(res, 200, { state: g.state, mode: g.mode });
+        if (sub === 'state') return json(res, 200, {
+          state: g.state,
+          mode: g.mode,
+          assurance: g.attachment?.assurance ?? null,
+          verified_attachment_required: gates.requireVerifiedAttachment,
+        });
 
         if (sub === 'attach' && req.method === 'POST') {
           const b = await readJson(req);
           const device = ['phone', 'workstation'].includes(b.device) ? b.device : 'unknown';
-          gates.attach(g.id, { operator: process.env.PRESENCE_OPERATOR || 'operator', device });
-          return json(res, 200, { ok: true });
+          // The stock HTTP LAN route deliberately cannot submit a verification
+          // decision. Only trusted host code may call GateRegistry.attach with
+          // the bounded result of a real verifier adapter.
+          const attached = gates.attach(g.id, { device });
+          return json(res, 200, {
+            ok: true,
+            assurance: attached?.attachment?.assurance ?? null,
+          });
         }
 
         if (sub === 'input' && req.method === 'POST') {
@@ -187,22 +205,30 @@ export function createRelay({ ledgerPath, ticketDir, onInput }) {
           } catch (e) {
             return text(res, 400, e.message);
           }
-          gates.countInput(g.id, clean.kind); // counts only — contents are never recorded
+          gates.countInput(g.id, clean.kind);
           if (onInput) await onInput(g, clean);
-          return json(res, 200, { ok: true });
+          return json(res, 200, { ok: true, assurance: g.attachment?.assurance ?? null });
         }
 
         if (sub === 'release' && req.method === 'POST') {
           const b = await readJson(req);
           const outcome = ['resumed', 'abandoned'].includes(b.outcome) ? b.outcome : 'resumed';
-          gates.release(g.id, outcome);
-          return json(res, 200, { ok: true });
+          const released = gates.release(g.id, outcome);
+          return json(res, 200, {
+            ok: true,
+            assurance: released?.attachment?.assurance ?? null,
+          });
         }
       }
 
-      if (path === '/health') return json(res, 200, { ok: true, lan: lanAddress() });
+      if (path === '/health') return json(res, 200, {
+        ok: true,
+        lan: lanAddress(),
+        verified_attachment_required: gates.requireVerifiedAttachment,
+      });
       return text(res, 404, 'not found');
     } catch (e) {
+      if (e instanceof AttachmentAssuranceError) return text(res, 403, e.message);
       return text(res, 500, e.message);
     }
   });
