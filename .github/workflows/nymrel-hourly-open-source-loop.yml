@@ -1,9 +1,15 @@
-name: Nymrel hourly open-source loop
+name: Nymrel guarded open-source maintenance
 
+# Manual-only. Write-capable maintenance is coordinated at the organization
+# level so small repositories do not create duplicate automated pull requests.
 on:
-  schedule:
-    - cron: "17 9,21 * * *"
   workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: nymrel-hourly-open-source-loop
+  cancel-in-progress: false
 
 jobs:
   maintain:
@@ -13,9 +19,8 @@ jobs:
       canary_mode: false
       guard_ref: 3a3e9ea17ca7655cb635f06f7fb51aa0b00ce1c5
     permissions:
-      actions: read
-      contents: write
-      issues: read
-      pull-requests: write
-      copilot-requests: write
-      statuses: write
+      actions: read # Inspect workflow state for guarded maintenance.
+      contents: write # Commit proposed maintenance to a review branch.
+      pull-requests: write # Open and update the proposed maintenance PR.
+      copilot-requests: write # Request the configured coding agent for maintenance.
+      statuses: write # Record guard results on the candidate commit.

@@ -29,7 +29,17 @@ export class Presence {
   }
 
   /**
-   * Open a gate. Returns { id, mode, console_url, pager_url, mode_forced }.
+   * Open a gate. Returns:
+   * {
+   *   id, state, human_required, approval_profile,
+   *   mode, console_url, pager_url, mode_forced
+   * }.
+   *
+   * A server configured with `bypass_tool_approvals` returns a terminal
+   * `retired` state only when trusted host code supplied a fresh capability
+   * bound to the exact tool invocation. A generic `tool_approval` request still
+   * prompts, and the requesting agent cannot select or override the profile.
+   *
    * @param {object} o
    * @param {'attach'|'yield'} o.mode        requested; policy may force yield
    * @param {string} o.gate_kind             see GATE_KINDS
@@ -73,7 +83,7 @@ export class Presence {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const s = await this.poll(id);
-      if (['released', 'abandoned', 'timeout', 'refused'].includes(s.state)) return s;
+      if (['released', 'abandoned', 'timeout', 'refused', 'retired'].includes(s.state)) return s;
       if (onTick) await onTick(s);
       await new Promise((r) => setTimeout(r, intervalMs));
     }

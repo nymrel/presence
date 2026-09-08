@@ -12,8 +12,20 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
+import { GateRegistry, GATE_KINDS } from '../src/gates.js';
 import { PresenceLedger } from '../src/ledger.js';
-import { enforceMode, validateInput, YIELD_ONLY } from '../src/policy.js';
+import {
+  APPROVAL_PROFILES,
+  BYPASSABLE_GATE_KINDS,
+  decideHumanRequirement,
+  enforceMode,
+  normalizeApprovalProfile,
+  validateInput,
+  YIELD_ONLY,
+} from '../src/policy.js';
+import { Presence } from '../src/client.js';
+import { createRelay } from '../src/relay.js';
+import { TrustedApprovalRegistry } from '../src/trusted-approvals.js';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
 
@@ -80,7 +92,7 @@ describe('the ledger cannot record what a human entered', () => {
 
   test('input_kinds keeps counts and discards anything non-numeric', () => {
     const l = new PresenceLedger(path);
-    const rec = l.append({ id: 'b', event: 'human.released', input_kinds: { pointer: 2, key: '4242424242424242' } });
+    const rec = l.append({ id: 'b', event: 'rail.input-summary', input_kinds: { pointer: 2, key: '4242424242424242' } });
     assert.equal(rec.input_kinds.pointer, 2);
     assert.equal(rec.input_kinds.key, undefined, 'a non-integer must never survive into the ledger');
   });
@@ -88,6 +100,264 @@ describe('the ledger cannot record what a human entered', () => {
   test('the hash chain detects tampering', () => {
     const l = new PresenceLedger(path);
     assert.equal(l.verify().ok, true);
+  });
+});
+
+describe('approval profiles fail closed', () => {
+  test('the regular profile still prompts for local tool approvals', () => {
+    const d = decideHumanRequirement('tool_approval', 'prompt');
+    assert.equal(d.humanRequired, true);
+    assert.equal(d.approvalProfile, 'prompt');
+  });
+
+  test('the permissive profile requires a trusted local tool approval binding', () => {
+    assert.deepEqual(BYPASSABLE_GATE_KINDS, ['tool_approval']);
+    assert.equal(
+      decideHumanRequirement('tool_approval', 'bypass_tool_approvals').humanRequired,
+      true,
+      'a generic agent classification cannot authorize its own bypass',
+    );
+    assert.equal(
+      decideHumanRequirement(
+        'tool_approval',
+        'bypass_tool_approvals',
+        { trustedToolApproval: true },
+      ).humanRequired,
+      false,
+    );
+
+    for (const kind of GATE_KINDS.filter((k) => k !== 'tool_approval')) {
+      assert.equal(
+        decideHumanRequirement(kind, 'bypass_tool_approvals').humanRequired,
+        true,
+        `${kind} must remain human-required`
+      );
+    }
+  });
+
+  test('unknown profiles normalize to prompt', () => {
+    assert.deepEqual(APPROVAL_PROFILES, ['prompt', 'bypass_tool_approvals']);
+    assert.equal(normalizeApprovalProfile('bypass_all'), 'prompt');
+    assert.equal(decideHumanRequirement('tool_approval', 'bypass_all').humanRequired, true);
+  });
+
+  test('a bypass writes a durable terminal ticket without forging a human event', () => {
+    const root = mkdtempSync(join(tmpdir(), 'presence-bypass-'));
+    const ledger = new PresenceLedger(join(root, 'ledger.jsonl'));
+    const gates = new GateRegistry({ ledger, ticketDir: join(root, 'tickets') });
+    const id = '00000000-0000-4000-8000-000000000001';
+
+    assert.throws(
+      () => gates.bypass({
+        id: '00000000-0000-4000-8000-000000000000',
+        mode: 'yield',
+        gate_kind: 'payment',
+        host: 'example.com',
+        task: 'Pay',
+        instruction: 'Confirm payment',
+        resumeHint: 'continue',
+        reason: 'must not matter',
+      }),
+      /approval bypass refused/
+    );
+
+    const ticket = gates.bypass({
+      id,
+      mode: 'attach',
+      gate_kind: 'tool_approval',
+      host: 'localhost',
+      task: 'Run approved test suite',
+      instruction: 'Approve the local tool call',
+      resumeHint: 'continue after approval',
+      reason: 'operator profile pre-authorized local tool prompts',
+      approvalBinding: {
+        gate_kind: 'tool_approval',
+        invocation_id: 'direct-registry-test',
+        tool_name: 'node-test',
+        action_sha256: 'a'.repeat(64),
+        capability: 'must-not-persist',
+      },
+    });
+
+    assert.equal(ticket.state, 'retired');
+    assert.equal(ticket.outcome, 'retired');
+    assert.equal(ticket.approval_binding.invocation_id, 'direct-registry-test');
+    assert.ok(!JSON.stringify(ticket).includes('must-not-persist'));
+    assert.equal(gates.get(id), null);
+
+    const rows = ledger.receipt(id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].event, 'rail.approval_bypassed');
+    assert.equal(rows[0].actor, 'rail');
+    assert.equal(rows[0].invocation_id, 'direct-registry-test');
+    assert.equal(rows[0].tool_name, 'node-test');
+    assert.equal(rows[0].action_sha256, 'a'.repeat(64));
+    assert.equal(rows.some((r) => r.event.startsWith('human.')), false);
+  });
+
+  test('the client treats retired as terminal instead of timing out', async () => {
+    const presence = new Presence('http://unused');
+    presence.poll = async (id) => ({ id, state: 'retired' });
+    const state = await presence.waitForHuman('gate', { timeoutMs: 25, intervalMs: 1 });
+    assert.equal(state.state, 'retired');
+  });
+
+  test('an agent request cannot select the permissive profile', async (t) => {
+    const root = mkdtempSync(join(tmpdir(), 'presence-relay-prompt-'));
+    const { server, issueTrustedToolApproval } = createRelay({
+      ledgerPath: join(root, 'ledger.jsonl'),
+      ticketDir: join(root, 'tickets'),
+      approvalProfile: 'prompt',
+    });
+    assert.throws(
+      () => issueTrustedToolApproval({
+        gate_kind: 'tool_approval',
+        invocation_id: 'untrusted-invocation',
+        tool_name: 'node-test',
+        action_sha256: 'a'.repeat(64),
+      }),
+      /profile does not permit/,
+    );
+
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const opened = await fetch(`${base}/agent/gate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'attach',
+        gate_kind: 'tool_approval',
+        approval_profile: 'bypass_tool_approvals',
+        host: 'localhost',
+        task: 'Attempt self-promotion',
+        instruction: 'Approve this local tool call',
+      }),
+    });
+
+    assert.equal(opened.status, 201);
+    const body = await opened.json();
+    assert.equal(body.state, 'open');
+    assert.equal(body.human_required, true);
+    assert.equal(body.approval_profile, 'prompt');
+
+    const pager = await (await fetch(`${base}/pager/gates`)).json();
+    assert.equal(pager.length, 1);
+    assert.equal(pager[0].id, body.id);
+  });
+
+  test('trusted approval capabilities are exact, one-time, and expiring', () => {
+    let now = 1_000;
+    const approvals = new TrustedApprovalRegistry({ now: () => now, ttlMs: 100 });
+    const issued = approvals.issue({
+      gate_kind: 'tool_approval',
+      invocation_id: 'invocation-1',
+      tool_name: 'node-test',
+      action_sha256: 'a'.repeat(64),
+    });
+
+    assert.equal(approvals.consume(issued, 'payment'), null, 'kind mismatch must prompt');
+    assert.equal(
+      approvals.consume({ ...issued, invocation_id: 'invocation-2' }, 'tool_approval'),
+      null,
+      'invocation mismatch must prompt',
+    );
+    assert.equal(
+      approvals.consume({ ...issued, tool_name: 'different-tool' }, 'tool_approval'),
+      null,
+      'tool mismatch must prompt',
+    );
+    assert.equal(
+      approvals.consume({ ...issued, action_sha256: 'c'.repeat(64) }, 'tool_approval'),
+      null,
+      'action mismatch must prompt',
+    );
+    assert.equal(approvals.consume(issued, 'tool_approval')?.invocation_id, 'invocation-1');
+    assert.equal(approvals.consume(issued, 'tool_approval'), null, 'capability is one-time');
+
+    const expiring = approvals.issue({
+      gate_kind: 'tool_approval',
+      invocation_id: 'invocation-expiring',
+      tool_name: 'node-test',
+      action_sha256: 'b'.repeat(64),
+    });
+    now += 100;
+    assert.equal(approvals.consume(expiring, 'tool_approval'), null, 'expiry fails closed');
+  });
+
+  test('generic tool approvals prompt and an exact trusted invocation retires', async (t) => {
+    const root = mkdtempSync(join(tmpdir(), 'presence-relay-'));
+    const { server, issueTrustedToolApproval } = createRelay({
+      ledgerPath: join(root, 'ledger.jsonl'),
+      ticketDir: join(root, 'tickets'),
+      approvalProfile: 'bypass_tool_approvals',
+    });
+
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const generic = await fetch(`${base}/agent/gate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'yield',
+        gate_kind: 'tool_approval',
+        trusted_tool_approval: {
+          capability: 'A'.repeat(43),
+          invocation_id: 'self-minted',
+          tool_name: 'payments',
+          action_sha256: 'f'.repeat(64),
+        },
+        host: 'payments.example',
+        task: 'Send payment',
+        instruction: 'Confirm a charge',
+      }),
+    });
+    const genericBody = await generic.json();
+    assert.equal(genericBody.state, 'open');
+    assert.equal(genericBody.human_required, true);
+
+    const trustedToolApproval = issueTrustedToolApproval({
+      gate_kind: 'tool_approval',
+      invocation_id: 'test-invocation-1',
+      tool_name: 'node-test',
+      action_sha256: 'a'.repeat(64),
+    });
+    const opened = await fetch(`${base}/agent/gate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'attach',
+        gate_kind: 'tool_approval',
+        trusted_tool_approval: trustedToolApproval,
+        host: 'localhost',
+        task: 'Run the approved local test command',
+        instruction: 'Approve this local tool call',
+      }),
+    });
+
+    assert.equal(opened.status, 201);
+    const body = await opened.json();
+    assert.equal(body.state, 'retired');
+    assert.equal(body.human_required, false);
+    assert.equal(body.approval_profile, 'bypass_tool_approvals');
+    assert.equal(body.console_url, null);
+    assert.equal(body.pager_url, null);
+
+    const polled = await (await fetch(`${base}/agent/gate/${body.id}`)).json();
+    assert.equal(polled.state, 'retired');
+    assert.equal(polled.outcome, 'retired');
+
+    const pager = await (await fetch(`${base}/pager/gates`)).json();
+    assert.deepEqual(pager.map((gate) => gate.id), [genericBody.id]);
   });
 });
 
@@ -109,7 +379,6 @@ describe('the browser does not pretend to be human', () => {
     for (const f of readdirSync(SRC)) {
       if (!f.endsWith('.js')) continue;
       const body = readFileSync(join(SRC, f), 'utf8');
-      // strip comments so our own prose about NOT doing this doesn't trip the test
       const code = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
       for (const p of STEALTH_PATTERNS) {
         if (code.includes(p)) offenders.push(`${f}: ${p}`);

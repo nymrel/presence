@@ -10,10 +10,10 @@ There are **two independent questions**, and conflating them is how a product
 like this gets someone sued.
 
 **Question 1 — is the human's act legitimate?**
-By construction, yes. A real person, acting under their own authority, in a
-live session, personally satisfies a control that exists to confirm a person is
-there. Nothing is solved elsewhere and imported. Nothing simulates a human
-signal. A CAPTCHA wants a human; it gets one.
+By construction, yes only when a real person, acting under their own authority,
+in a live session, personally satisfies a control that exists to confirm a
+person is there. Nothing is solved elsewhere and imported. Nothing simulates a
+human signal. A CAPTCHA wants a human; it gets one.
 
 **Question 2 — is the agent's automated access to the *rest* of the flow
 permitted?**
@@ -63,7 +63,8 @@ lives in Question 2, and no amount of good behaviour at the gate touches it.
    procurement and logistics; the right to automate is negotiated.
 4. **Internal enterprise workflows** where a compliance rule — not a bot
    detector — requires a named human to approve a step. This is the strongest
-   commercial ground and the audit trail is the product.
+   commercial ground only after attachment identity and receipt witnessing are
+   actually implemented and reviewed.
 
 ## Not clean — do not sell here
 
@@ -71,8 +72,9 @@ lives in Question 2, and no amount of good behaviour at the gate touches it.
    does not cure it. This is the single most common disqualifier.
 2. **Banking, brokerage, payments, insurance portals.** Near-universally
    prohibited, and credential-sharing rules compound it.
-3. **Accounts the human is not authorised on.** Presence proves a human was
-   present; it cannot prove they had authority. That is the customer's duty.
+3. **Accounts the human is not authorised on.** Presence can record attention;
+   it cannot prove the person's external legal authority. That is the customer's
+   duty.
 4. **Anything sold as "get past CAPTCHAs."** Even where technically clean, that
    framing invites the enforcement wave that kills bypass vendors, and it
    misdescribes the product.
@@ -84,18 +86,46 @@ lives in Question 2, and no amount of good behaviour at the gate touches it.
 ## The honest sales sentence
 
 > Presence does not get you past anything. It gets a human to the exact spot
-> where one is required, in seconds instead of minutes, and leaves a signed
-> record that they were there. If a site does not permit your agent to be there
-> at all, Presence will not fix that and we will tell you so.
+> where one is required, in seconds instead of minutes, and leaves a hash-chained
+> record of the handoff. Current LAN receipts do not prove which human acted. If
+> a site does not permit your agent to be there at all, Presence will not fix that
+> and we will tell you so.
 
-## Known weakness — state it to customers, do not hide it
+## Attachment identity — current measured boundary
 
-**Opening the console page currently counts as a human arriving.** Anything that
-can reach the LAN URL can produce a `human.attached` record. For a single-operator
-LAN that is acceptable; for an enterprise audit trail it is not, because the
-receipt's whole value is that it is hard to forge.
+An unauthenticated LAN page visit must not be represented as a verified human.
+The core now uses two explicit assurance states:
 
-The fix, before any enterprise sale: bind attach to a device-held key
-(WebAuthn/passkey on the operator's phone) and sign the release event with it, so
-the receipt proves *which human*, not merely *that the console was opened*.
-`unmeasured` — not built. Tracked as the top item in README "Next".
+- `lan-unverified`: emits rail-authored `console.attached` and
+  `console.released` events. It proves only that a console participated.
+- `webauthn-verified`: reserved for a trusted host adapter that verified a fresh
+  gate-bound WebAuthn assertion with required user verification. Only this state
+  may emit `human.attached`. It may emit `human.released` only when the caller
+  presents the short-lived capability bound to that verified attachment.
+
+`PRESENCE_REQUIRE_VERIFIED_ATTACH=1` blocks unverified attach, input, and release.
+That is the only acceptable posture for a future named-human or enterprise audit
+claim.
+
+The core contract and refusal behavior are implemented in the current draft.
+The actual WebAuthn verifier adapter, credential enrollment, registration
+ceremony, expected-origin/RP configuration, counter store, recovery process,
+browser ceremony, and authenticated capability delivery remain `unmeasured`
+and unbuilt. No enterprise-ready claim is permitted until those pieces pass
+independent review.
+
+Presence stores only bounded operator/verifier handles, coarse device class, and
+SHA-256 bindings for credential ID and challenge. Raw assertions, credentials,
+challenges, signatures, authenticator data, client-data JSON, user handles,
+public keys, and attestation objects are structurally refused by the ledger.
+
+See `docs/ATTACHMENT_ASSURANCE.md` and
+`tests/attachment-assurance.test.js`.
+
+## Receipt integrity — separate limitation
+
+The ledger is hash-chained and can detect modification within the retained
+chain. A host that controls the whole file can still truncate final rows or
+rebuild a different chain. A future external signed checkpoint or witness is
+required before describing the receipt as independently notarised. `unmeasured`
+— not built and not for sale.
