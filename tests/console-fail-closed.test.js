@@ -104,7 +104,11 @@ describe('console UI fails closed with the relay', () => {
       createElement: (tag) => new FakeNode(tag),
       getElementById: (id) => (id === 'list' ? list : status),
     };
-    const script = html.match(/<script[^>]*>([\s\S]*?)<\/script>/i)?.[1];
+    // Extract our generated fixture's single script; this is not an HTML sanitizer.
+    const scriptStart = html.indexOf('>', html.indexOf('<script')) + 1;
+    const scriptEnd = html.indexOf('</script>', scriptStart);
+    assert.ok(scriptStart > 0 && scriptEnd > scriptStart);
+    const script = html.slice(scriptStart, scriptEnd);
     const context = {
       document,
       fetch: async () => ({ json: async () => [hostile] }),
