@@ -89,8 +89,11 @@ else {
 function renderReceipt(rows) {
   const first = rows[0];
   const last = rows[rows.length - 1];
-  const attached = rows.find((r) => r.event === 'human.attached');
-  const released = rows.find((r) => r.event === 'human.released');
+  const humanAttached = rows.find((r) => r.event === 'human.attached');
+  const consoleAttached = rows.find((r) => r.event === 'console.attached');
+  const attached = humanAttached ?? consoleAttached;
+  const released = rows.find((r) => r.event === 'human.released' || r.event === 'console.released');
+  const retired = rows.find((r) => r.event === 'gate.retired');
   const forced = rows.find((r) => r.event === 'rail.mode_forced');
   const bypassed = rows.find((r) => r.event === 'rail.approval_bypassed');
 
@@ -111,9 +114,14 @@ function renderReceipt(rows) {
   L.push(`                (the image itself was never stored)`);
   L.push('');
   L.push(`opened          ${first.at}`);
-  L.push(`human attached  ${attached ? `${attached.at}  operator=${attached.operator} device=${attached.device}` : '— never'}`);
-  L.push(`released        ${released ? `${released.at}  outcome=${released.outcome}` : (bypassed ? `— retired by rail` : '— still open')}`);
-  if (secs !== null) L.push(`human attention ${secs}s`);
+  if (consoleAttached) {
+    L.push(`console arrived ${consoleAttached.at}  assurance=${consoleAttached.assurance} device=${consoleAttached.device}`);
+  }
+  L.push(`human attached  ${humanAttached ? `${humanAttached.at}  assurance=${humanAttached.assurance} operator=${humanAttached.operator} device=${humanAttached.device}` : '— never'}`);
+  L.push(`released        ${released ? `${released.at}  actor=${released.actor} assurance=${released.assurance} outcome=${released.outcome}` : (bypassed ? '— retired by rail' : (retired ? `${retired.at}  actor=${retired.actor} outcome=retired` : '— still open'))}`);
+  if (secs !== null) {
+    L.push(`${humanAttached ? 'human attention' : 'console attention'} ${secs}s`);
+  }
   if (released?.input_kinds && Object.keys(released.input_kinds).length) {
     L.push(`input relayed   ${Object.entries(released.input_kinds).map(([k, v]) => `${v}× ${k}`).join(', ')}`);
     L.push(`                (counts only — contents were never recorded)`);
