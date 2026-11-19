@@ -61,11 +61,12 @@ export class Presence {
   }
 
   async pushFrame(id, frame_base64) {
-    await fetch(`${this.base}/agent/gate/${id}/frame`, {
+    const r = await fetch(`${this.base}/agent/gate/${id}/frame`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ frame_base64 }),
     });
+    if (!r.ok) throw new Error(`frame update failed: ${await r.text()}`);
   }
 
   /** Cheap, immediate. Never blocks a lane. */

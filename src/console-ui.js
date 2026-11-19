@@ -90,12 +90,13 @@ export function gatePage(gate, { nonce = '' } = {}) {
     <div class="note">This opens in your own browser, in your own session. Presence never sees what you enter — it only waits for you to say you're done.</div>
     <button class="btn primary" id="done">I've done it</button>
   ` : `
-    <div class="note">Tap the picture to click. It's the agent's live session — your taps go straight into it.</div>
+    <div class="note">${gate.frameSha ? "Tap the picture to click. It's the agent's live session — your taps go straight into it." : "A screen preview is not available. Check the agent's page before sending keystrokes."}</div>
+    <label for="kbd" class="note" style="display:block">Send keystrokes to the agent's page</label>
     <input class="kbd" id="kbd" placeholder="Type here to type into the page" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
     <button class="btn primary" id="done">Done — agent can continue</button>
   `}
   <button class="btn ghost" id="cancel">Can't do this now</button>
-  <div class="status" id="status">Connecting to the local rail…</div>
+  <div class="status" id="status" role="status" aria-live="polite">Connecting to the local rail…</div>
 </div>
 <script nonce="${esc(nonce)}">
 const ID=${JSON.stringify(gate.id)}, MODE=${JSON.stringify(gate.mode)};
@@ -210,7 +211,7 @@ export function pagerPage({ nonce = '' } = {}) {
   <div class="eyebrow">Presence</div>
   <h1 style="margin-bottom:14px">Waiting on you</h1>
   <div id="list"><div class="empty">Nothing needs you right now.<br>Leave this open — it'll buzz.</div></div>
-  <div class="status" id="s">watching…</div>
+  <div class="status" id="s" role="status" aria-live="polite">Connecting to Presence…</div>
 </div>
 <script nonce="${esc(nonce)}">
 let seen=new Set(),primed=false;
@@ -265,8 +266,10 @@ async function tick(){
       }
     }
     primed=true;
-    document.getElementById('s').textContent='watching · '+new Date().toLocaleTimeString();
-  }catch{document.getElementById('s').textContent='rail offline';}
+    const nextStatus=cards.length?cards.length+' handoff'+(cards.length===1?'':'s')+' waiting. Open a card to help.':'Connected. Nothing needs your attention.';
+    const status=document.getElementById('s');
+    if(status.textContent!==nextStatus)status.textContent=nextStatus;
+  }catch{document.getElementById('s').textContent='Presence is unreachable. Keep this page open to reconnect; existing cards may be out of date.';}
 }
 tick();setInterval(tick,2000);
 </script></body></html>`;
